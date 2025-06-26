@@ -1,4 +1,51 @@
-/*index.css*/
+/* index.css */
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
+
+/* Custom scrollbar styles for a cleaner look */
+/* For Webkit browsers (Chrome, Safari) */
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px; /* For horizontal scrollbars */
+}
+
+::-webkit-scrollbar-track {
+  background: #f1f1f1; /* Light background for the track */
+  border-radius: 10px;
+}
+
+html.dark ::-webkit-scrollbar-track {
+  background: #333; /* Darker background for the track in dark mode */
+}
+
+::-webkit-scrollbar-thumb {
+  background: #888; /* Gray thumb */
+  border-radius: 10px;
+}
+
+html.dark ::-webkit-scrollbar-thumb {
+  background: #555; /* Darker thumb in dark mode */
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: #555; /* Darker gray on hover */
+}
+
+html.dark ::-webkit-scrollbar-thumb:hover {
+  background: #777; /* Lighter gray on hover in dark mode */
+}
+
+/* Ensure font consistency across the app */
+body {
+  font-family: 'Inter', sans-serif; /* Using Inter font as per instructions */
+}
+
+/* Base styles for dark mode transition */
+html.dark {
+  transition: background-color 0.3s ease-in-out;
+}
+
+body {
+  transition: background-color 0.3s ease-in-out, color 0.3s ease-in-out;
+}
