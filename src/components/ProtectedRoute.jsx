@@ -1,12 +1,24 @@
-// 📁 src/components/ProtectedRoute.jsx
 import React from 'react';
 import { Navigate } from 'react-router-dom';
+import { useAuth } from '../hooks/useAuth'; // Import useAuth hook
 
 export default function ProtectedRoute({ children }) {
-  // Retrieve the authentication token from local storage
-  const token = localStorage.getItem('token');
+  const { user, loading } = useAuth();
 
-  // If a token exists, render the children (the protected content)
-  // Otherwise, redirect to the login page ("/") and replace the current entry in history
-  return token ? children : <Navigate to="/" replace />;
+  if (loading) {
+    // Optionally render a loading spinner or message while auth state is being determined
+    return (
+      <div className="min-h-screen flex items-center justify-center bg-gray-100 dark:bg-gray-900 text-gray-900 dark:text-white">
+        Checking authentication...
+      </div>
+    );
+  }
+
+  // If user is not logged in, redirect to the login page
+  if (!user) {
+    return <Navigate to="/login" replace />; // Redirects to /login
+  }
+
+  // If user is logged in, render the children components
+  return children;
 }

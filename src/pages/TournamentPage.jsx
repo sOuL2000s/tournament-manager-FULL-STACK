@@ -1,19 +1,18 @@
-// 📁 src/pages/TournamentPage.jsx
 import React, { useEffect, useState } from 'react';
 import { db } from '../firebase';
-import { collection, addDoc, onSnapshot, doc, deleteDoc, updateDoc, query, orderBy } from 'firebase/firestore'; // Added doc, deleteDoc, updateDoc, query, orderBy
-import { Link, useNavigate, useParams } from 'react-router-dom'; // Import useParams
+import { collection, addDoc, onSnapshot, doc, deleteDoc, updateDoc, query, orderBy, getDoc, writeBatch, getDocs, setDoc } from 'firebase/firestore';
+import { Link, useNavigate, useParams } from 'react-router-dom';
+import { useAuth } from '../hooks/useAuth';
 
 export default function TournamentPage() {
-  const { id: tournamentId } = useParams(); // Get tournament ID from URL
-  const [tournamentName, setTournamentName] = useState('Loading...');
-  const [tournaments, setTournaments] = useState([]); // This will now be a list of ALL tournaments for listing
-  const [name, setName] = useState(''); // State for new tournament name
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState(null);
-  const [showTournamentForm, setShowTournamentForm] = useState(false); // State to toggle create tournament form
+  const { id: tournamentId } = useParams();
+  const { user, loading: authLoading } = useAuth();
 
-  // States for sub-features within a specific tournament
+  const [tournamentName, setTournamentName] = useState('Loading...');
+  const [tournamentDetails, setTournamentDetails] = useState(null);
+  const [loadingTournamentData, setLoadingTournamentData] = useState(true);
+  const [error, setError] = useState(null);
+
   const [teams, setTeams] = useState([]);
   const [newTeamName, setNewTeamName] = useState('');
   const [teamError, setTeamError] = useState('');
@@ -24,50 +23,112 @@ export default function TournamentPage() {
 
   const navigate = useNavigate();
 
-  // Effect to fetch the specific tournament's name (for the heading)
+  const [modalOpen, setModalOpen] = useState(false);
+  const [modalMessage, setModalMessage] = useState('');
+  const [modalConfirmAction, setModalConfirmAction] = useState(null);
+  const [modalInputRequired, setModalInputRequired] = useState(false);
+  const [modalInputLabel, setModalInputLabel] = useState('');
+  const [modalInputValue, setModalInputValue] = useState('');
+  const [modalCustomContent, setModalCustomContent] = useState(null);
+
+  const [showTeamsConfigModal, setShowTeamsConfigModal] = useState(false);
+  const [enableColors, setEnableColors] = useState(false);
+  const [promotionSpots, setPromotionSpots] = useState('');
+  const [europeLeagueSpots, setEuropeLeagueSpots] = useState('');
+  const [relegationSpots, setRelegationSpots] = useState('');
+
+  const openModal = (message, confirmAction = null, inputRequired = false, inputLabel = '', initialValue = '', customContent = null) => {
+    setModalMessage(message);
+    setModalConfirmAction(() => confirmAction);
+    setModalInputRequired(inputRequired);
+    setModalInputLabel(inputLabel);
+    setModalInputValue(initialValue);
+    setModalCustomContent(customContent);
+    setModalOpen(true);
+  };
+
+  const handleModalConfirm = () => {
+    if (modalConfirmAction) {
+      modalConfirmAction(modalInputValue);
+    }
+    setModalOpen(false);
+    setModalInputValue('');
+    setModalCustomContent(null);
+    setModalConfirmAction(null);
+    setEnableColors(false);
+    setPromotionSpots('');
+    setEuropeLeagueSpots('');
+    setRelegationSpots('');
+  };
+
+  const handleModalCancel = () => {
+    setModalOpen(false);
+    setModalInputValue('');
+    setModalCustomContent(null);
+    setModalConfirmAction(null);
+    setEnableColors(false);
+    setPromotionSpots('');
+    setEuropeLeagueSpots('');
+    setRelegationSpots('');
+  };
+
   useEffect(() => {
-    if (!tournamentId) {
-      setError("No tournament ID provided.");
-      setLoading(false);
+    if (authLoading) {
+      setLoadingTournamentData(true);
       return;
     }
-    const fetchTournamentName = async () => {
+
+    if (!user || !user.uid) {
+      setError("You must be logged in to view tournament details.");
+      setLoadingTournamentData(false);
+      return;
+    }
+
+    if (!tournamentId) {
+      setError("No tournament ID provided in the URL.");
+      setLoadingTournamentData(false);
+      return;
+    }
+
+    setLoadingTournamentData(true);
+    setError(null);
+
+    const fetchTournamentDetails = async () => {
       try {
         const tournamentDocRef = doc(db, 'tournaments', tournamentId);
         const tournamentSnap = await getDoc(tournamentDocRef);
+
         if (tournamentSnap.exists()) {
-          setTournamentName(tournamentSnap.data().name);
+          const data = tournamentSnap.data();
+          if (user.uid && data.userId === user.uid) {
+            setTournamentName(data.name);
+            setTournamentDetails(data);
+          } else {
+            setTournamentName('Access Denied');
+            setError('You do not have permission to access this tournament.');
+          }
         } else {
           setTournamentName('Tournament Not Found');
-          setError('Tournament not found.');
+          setError('The requested tournament does not exist.');
         }
+        setLoadingTournamentData(false);
       } catch (err) {
-        console.error('Error fetching tournament name:', err);
-        setError('Failed to load tournament details.');
+        console.error('Error fetching tournament details:', err);
+        setTournamentName('Error');
+        setError('Failed to load tournament details. Please try again.');
+        setLoadingTournamentData(false);
       }
     };
-    fetchTournamentName();
-  }, [tournamentId]);
+    fetchTournamentDetails();
+  }, [tournamentId, user, authLoading]);
 
 
-  // Real-time listener for ALL tournaments (for the sidebar/main listing)
   useEffect(() => {
-    const unsub = onSnapshot(query(collection(db, 'tournaments'), orderBy('createdAt', 'desc')), (snapshot) => {
-      const list = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
-      setTournaments(list);
-      setLoading(false);
-    }, (err) => {
-      console.error('Error fetching all tournaments:', err);
-      setError('Failed to load tournaments list.');
-      setLoading(false);
-    });
-    return () => unsub();
-  }, []);
+    if (authLoading || !user || !tournamentId) {
+      setTeams([]);
+      return;
+    }
 
-
-  // Real-time listener for teams within the specific tournament
-  useEffect(() => {
-    if (!tournamentId) return;
     const teamsCollectionRef = collection(db, `tournaments/${tournamentId}/teams`);
     const unsubscribeTeams = onSnapshot(query(teamsCollectionRef, orderBy('name', 'asc')), (snapshot) => {
       setTeams(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() })));
@@ -76,12 +137,15 @@ export default function TournamentPage() {
       setTeamError('Failed to load teams.');
     });
     return () => unsubscribeTeams();
-  }, [tournamentId]);
+  }, [tournamentId, user, authLoading]);
 
 
-  // Real-time listener for fixtures within the specific tournament
   useEffect(() => {
-    if (!tournamentId) return;
+    if (authLoading || !user || !tournamentId) {
+      setFixtures([]);
+      return;
+    }
+
     const fixturesCollectionRef = collection(db, `tournaments/${tournamentId}/fixtures`);
     const unsubscribeFixtures = onSnapshot(query(fixturesCollectionRef, orderBy('timestamp', 'asc')), (snapshot) => {
       setFixtures(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() })));
@@ -90,33 +154,9 @@ export default function TournamentPage() {
       setFixtureError('Failed to load fixtures.');
     });
     return () => unsubscribeFixtures();
-  }, [tournamentId]);
+  }, [tournamentId, user, authLoading]);
 
 
-  // Handler for creating a new tournament (from the general tournaments list)
-  const handleCreateTournament = async () => {
-    if (!name.trim()) {
-      setError('Tournament name cannot be empty.'); // Use general error for this form
-      return;
-    }
-    setError(null);
-    try {
-      const docRef = await addDoc(collection(db, 'tournaments'), {
-        name,
-        createdAt: new Date().toISOString(),
-      });
-      // Navigate to the newly created tournament's page
-      navigate(`/tournament/${docRef.id}`);
-      setName('');
-      setShowTournamentForm(false); // Hide the form after creation
-    } catch (err) {
-      console.error('Error creating tournament:', err);
-      setError('Failed to create tournament.');
-    }
-  };
-
-
-  // Team Management Handlers
   const handleAddTeam = async () => {
     setTeamError('');
     if (!newTeamName.trim()) {
@@ -133,17 +173,202 @@ export default function TournamentPage() {
   };
 
   const handleDeleteTeam = async (teamId) => {
-    if (window.confirm('Are you sure you want to delete this team?')) { // Consider custom modal
+    openModal('Are you sure you want to delete this team?', async () => {
       try {
         await deleteDoc(doc(db, `tournaments/${tournamentId}/teams`, teamId));
       } catch (err) {
         console.error('Error deleting team:', err);
-        alert('Failed to delete team.'); // Using alert, but custom modal is preferred
+        openModal('Failed to delete team. Please try again.');
       }
+    });
+  };
+
+  const handleTeamsCountClick = () => {
+    setShowTeamsConfigModal(true);
+  };
+
+  const handleCreateLeagueFromTeams = async () => {
+    try {
+      const tournamentRef = doc(db, 'tournaments', tournamentId);
+      await updateDoc(tournamentRef, {
+        enableColors: enableColors,
+        promotionSpots: parseInt(promotionSpots) || 0,
+        europeLeagueSpots: parseInt(europeLeagueSpots) || 0,
+        relegationSpots: parseInt(relegationSpots) || 0
+      });
+      openModal('League configuration saved successfully!', null, false, '', '', null);
+      setShowTeamsConfigModal(false);
+    } catch (err) {
+      console.error('Error saving league configuration:', err);
+      openModal('Failed to save league configuration. Please try again.');
     }
   };
 
-  // Fixture Management Handlers
+  const updateLeaderboard = async () => {
+    if (!tournamentId) return;
+
+    const leaderboardRef = collection(db, `tournaments/${tournamentId}/leaderboard`);
+    const teamsRef = collection(db, `tournaments/${tournamentId}/teams`);
+    const fixturesRef = collection(db, `tournaments/${tournamentId}/fixtures`);
+
+    const teamsSnapshot = await getDocs(teamsRef);
+    const fixturesSnapshot = await getDocs(query(fixturesRef));
+
+    const teamStats = {};
+    teamsSnapshot.docs.forEach(teamDoc => {
+      const teamName = teamDoc.data().name;
+      teamStats[teamName] = {
+        id: teamDoc.id,
+        name: teamName,
+        played: 0,
+        wins: 0,
+        draws: 0,
+        losses: 0,
+        goalsFor: 0,
+        goalsAgainst: 0,
+        goalDifference: 0,
+        points: 0,
+      };
+    });
+
+    fixturesSnapshot.docs.forEach(fixtureDoc => {
+      const fixture = fixtureDoc.data();
+      if (fixture.status === 'completed') {
+        const teamA = fixture.teamA;
+        const teamB = fixture.teamB;
+        const scoreA = fixture.scoreA || 0;
+        const scoreB = fixture.scoreB || 0;
+
+        if (teamStats[teamA]) {
+          teamStats[teamA].played++;
+          teamStats[teamA].goalsFor += scoreA;
+          teamStats[teamA].goalsAgainst += scoreB;
+        }
+        if (teamStats[teamB]) {
+          teamStats[teamB].played++;
+          teamStats[teamB].goalsFor += scoreB;
+          teamStats[teamB].goalsAgainst += scoreA;
+        }
+
+        if (scoreA > scoreB) {
+          if (teamStats[teamA]) teamStats[teamA].wins++;
+          if (teamStats[teamB]) teamStats[teamB].losses++;
+        } else if (scoreB > scoreA) {
+          if (teamStats[teamB]) teamStats[teamB].wins++;
+          if (teamStats[teamA]) teamStats[teamA].losses++;
+        } else { // Draw
+          if (teamStats[teamA]) teamStats[teamA].draws++;
+          if (teamStats[teamB]) teamStats[teamB].draws++;
+        }
+      }
+    });
+
+    const pointsPerWin = tournamentDetails?.pointsPerWin || 3;
+    const pointsPerDraw = tournamentDetails?.pointsPerDraw || 1;
+
+    const batch = writeBatch(db);
+    for (const teamName in teamStats) {
+      const stats = teamStats[teamName];
+      stats.goalDifference = stats.goalsFor - stats.goalsAgainst;
+      stats.points = (stats.wins * pointsPerWin) + (stats.draws * pointsPerDraw);
+
+      const teamLeaderboardDocRef = doc(leaderboardRef, stats.id);
+      batch.set(teamLeaderboardDocRef, stats, { merge: true });
+    }
+
+    try {
+      await batch.commit();
+      console.log('Leaderboard updated successfully!');
+    } catch (err) {
+      console.error('Error updating leaderboard:', err);
+    }
+  };
+
+  useEffect(() => {
+    if (!authLoading && user && tournamentDetails && fixtures.length > 0) {
+      updateLeaderboard();
+    }
+  }, [fixtures, tournamentDetails, authLoading, user]);
+
+
+  const handleGenerateFixtures = async () => {
+    if (teams.length < 2) {
+      openModal('You need at least two teams to generate fixtures!');
+      return;
+    }
+    if (!tournamentDetails) {
+        openModal('Tournament details not loaded. Cannot generate fixtures.');
+        return;
+    }
+
+    const fixtureOption = tournamentDetails.fixtureOption;
+    const generatedFixtures = [];
+    const teamNames = teams.map(t => t.name);
+
+    let currentDate = new Date();
+    currentDate.setHours(12, 0, 0, 0);
+
+    if (fixtureOption === 'Single Matches') {
+      for (let i = 0; i < teamNames.length; i++) {
+        for (let j = i + 1; j < teamNames.length; j++) {
+          generatedFixtures.push({
+            teamA: teamNames[i],
+            teamB: teamNames[j],
+            date: currentDate.toISOString().split('T')[0],
+            timestamp: new Date(currentDate),
+            status: 'scheduled',
+            scoreA: 0,
+            scoreB: 0,
+          });
+          currentDate.setDate(currentDate.getDate() + 1);
+        }
+      }
+    } else if (fixtureOption === 'Home and Away Matches') {
+      for (let i = 0; i < teamNames.length; i++) {
+        for (let j = 0; j < teamNames.length; j++) {
+          if (i === j) continue;
+
+          generatedFixtures.push({
+            teamA: teamNames[i],
+            teamB: teamNames[j],
+            date: currentDate.toISOString().split('T')[0],
+            timestamp: new Date(currentDate),
+            status: 'scheduled',
+            scoreA: 0,
+            scoreB: 0,
+          });
+          currentDate.setDate(currentDate.getDate() + 1);
+        }
+      }
+    }
+
+    if (generatedFixtures.length === 0) {
+      openModal('No fixtures could be generated. Check your team list and fixture options.');
+      return;
+    }
+
+    const batch = writeBatch(db);
+    const fixturesCollectionRef = collection(db, `tournaments/${tournamentId}/fixtures`);
+
+    const existingFixturesSnapshot = await getDocs(fixturesCollectionRef);
+    existingFixturesSnapshot.docs.forEach((doc) => {
+      batch.delete(doc.ref);
+    });
+
+    generatedFixtures.forEach(fixture => {
+      const newFixtureRef = doc(fixturesCollectionRef);
+      batch.set(newFixtureRef, fixture);
+    });
+
+    try {
+      await batch.commit();
+      openModal(`Successfully generated ${generatedFixtures.length} fixtures!`, null);
+    } catch (err) {
+      console.error('Error generating fixtures:', err);
+      openModal('Failed to generate fixtures. Please try again.');
+    }
+  };
+
   const handleAddFixture = async () => {
     setFixtureError('');
     if (!newFixture.teamA || !newFixture.teamB || !newFixture.date) {
@@ -155,7 +380,6 @@ export default function TournamentPage() {
       return;
     }
     try {
-      // Convert date string to Firestore Timestamp for better querying
       const fixtureDate = new Date(newFixture.date);
       if (isNaN(fixtureDate)) {
         setFixtureError('Invalid date format.');
@@ -164,10 +388,10 @@ export default function TournamentPage() {
 
       await addDoc(collection(db, `tournaments/${tournamentId}/fixtures`), {
         ...newFixture,
-        timestamp: fixtureDate, // Store as Date object, Firestore will convert to Timestamp
-        scoreA: 0, // Initialize scores to 0
+        timestamp: fixtureDate,
+        scoreA: 0,
         scoreB: 0,
-        status: 'scheduled' // Initialize status
+        status: 'scheduled'
       });
       setNewFixture({ teamA: '', teamB: '', date: '', timestamp: null, status: 'scheduled', scoreA: 0, scoreB: 0 });
     } catch (err) {
@@ -177,42 +401,48 @@ export default function TournamentPage() {
   };
 
   const handleDeleteFixture = async (fixtureId) => {
-    if (window.confirm('Are you sure you want to delete this fixture?')) { // Consider custom modal
+    openModal('Are you sure you want to delete this fixture?', async () => {
       try {
         await deleteDoc(doc(db, `tournaments/${tournamentId}/fixtures`, fixtureId));
       } catch (err) {
         console.error('Error deleting fixture:', err);
-        alert('Failed to delete fixture.'); // Using alert, but custom modal is preferred
+        openModal('Failed to delete fixture. Please try again.');
       }
-    }
+    });
   };
 
   const handleUpdateScores = async (fixtureId, currentScoreA, currentScoreB) => {
-    const scoreA = prompt(`Enter score for ${fixtures.find(f => f.id === fixtureId)?.teamA || 'Team A'}:`, currentScoreA);
-    const scoreB = prompt(`Enter score for ${fixtures.find(f => f.id === fixtureId)?.teamB || 'Team B'}:`, currentScoreB);
+    const fixtureToUpdate = fixtures.find(f => f.id === fixtureId);
+    if (!fixtureToUpdate) return;
 
-    if (scoreA !== null && scoreB !== null) {
-      const parsedScoreA = parseInt(scoreA);
-      const parsedScoreB = parseInt(scoreB);
+    openModal(
+      `Enter scores for ${fixtureToUpdate.teamA} vs ${fixtureToUpdate.teamB}:`,
+      async (inputValues) => {
+        const parsedScoreA = parseInt(inputValues.split(',')[0]);
+        const parsedScoreB = parseInt(inputValues.split(',')[1]);
 
-      if (isNaN(parsedScoreA) || isNaN(parsedScoreB)) {
-        alert('Invalid score entered. Please enter numbers.');
-        return;
-      }
+        if (isNaN(parsedScoreA) || isNaN(parsedScoreB)) {
+          openModal('Invalid score entered. Please enter numbers.');
+          return;
+        }
 
-      try {
-        const fixtureRef = doc(db, `tournaments/${tournamentId}/fixtures`, fixtureId);
-        await updateDoc(fixtureRef, {
-          scoreA: parsedScoreA,
-          scoreB: parsedScoreB,
-          status: 'completed'
-        });
-        // Optionally update leaderboard here, or trigger a cloud function
-      } catch (err) {
-        console.error('Error updating scores:', err);
-        alert('Failed to update scores. Please try again.');
-      }
-    }
+        try {
+          const fixtureRef = doc(db, `tournaments/${tournamentId}/fixtures`, fixtureId);
+          await updateDoc(fixtureRef, {
+            scoreA: parsedScoreA,
+            scoreB: parsedScoreB,
+            status: 'completed'
+          });
+          await updateLeaderboard();
+        } catch (err) {
+          console.error('Error updating scores:', err);
+          openModal('Failed to update scores. Please try again.');
+        }
+      },
+      true,
+      'Score A,Score B',
+      `${currentScoreA},${currentScoreB}`
+    );
   };
 
 
@@ -267,100 +497,88 @@ export default function TournamentPage() {
 
         {/* Main Content Area */}
         <div className="lg:col-span-3 space-y-8">
-          {/* Tournament Creation Section (can be hidden/shown via button) */}
-          <div className="bg-white dark:bg-gray-800 p-6 rounded-lg shadow-md border border-gray-200 dark:border-gray-700">
-            <h3 className="text-xl font-bold mb-4">➕ All Tournaments (for quick navigation / create new)</h3>
-            <button
-              onClick={() => setShowTournamentForm(!showTournamentForm)}
-              className="bg-blue-600 text-white px-4 py-2 rounded-md mb-4 hover:bg-blue-700 transition-colors"
-            >
-              {showTournamentForm ? 'Hide Create Form' : 'Create New Tournament'}
-            </button>
-            {showTournamentForm && (
-              <div className="flex flex-col sm:flex-row gap-2 mb-4 mt-2">
-                <input
-                  type="text"
-                  value={name}
-                  onChange={(e) => setName(e.target.value)}
-                  placeholder="New Tournament name"
-                  className="border p-2 rounded-md w-full sm:w-64 dark:bg-gray-700 dark:text-white focus:outline-none focus:ring-2 focus:ring-blue-500"
-                />
-                <button
-                  onClick={handleCreateTournament}
-                  className="bg-green-600 text-white px-4 py-2 rounded-md hover:bg-green-700 transition-colors"
-                >
-                  ➕ Create Tournament
-                </button>
-              </div>
-            )}
-
-            {loading ? (
-              <p className="text-gray-500">Loading tournaments...</p>
-            ) : tournaments.length === 0 ? (
-              <p className="text-gray-500">No tournaments found yet. Create one above!</p>
-            ) : (
-              <ul className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-4 mt-4">
-                {tournaments.map(t => (
-                  <li
-                    key={t.id}
-                    className="border border-gray-300 dark:border-gray-600 rounded-lg p-3 hover:shadow-md hover:bg-gray-50 dark:hover:bg-gray-700 transition-all duration-200"
-                  >
-                    <Link
-                      to={`/tournament/${t.id}`}
-                      className="text-blue-600 dark:text-blue-400 hover:underline block"
-                    >
-                      <h4 className="font-medium text-lg">{t.name}</h4>
-                      {t.createdAt && t.createdAt.seconds && ( // Ensure createdAt exists and is a timestamp
-                        <div className="text-sm text-gray-500 dark:text-gray-400 mt-1">
-                          Created on {new Date(t.createdAt.seconds * 1000).toLocaleDateString()}
-                        </div>
-                      )}
-                    </Link>
-                  </li>
-                ))}
-              </ul>
-            )}
-          </div>
-
           {/* Team Management Section */}
           <div className="bg-white dark:bg-gray-800 p-6 rounded-lg shadow-md border border-gray-200 dark:border-gray-700">
             <h3 className="text-xl font-bold mb-4">⚽ Team Management</h3>
-            <div className="flex flex-col sm:flex-row gap-2 mb-4">
+            <div className="flex flex-wrap gap-2 mb-4 items-center">
               <input
                 type="text"
                 value={newTeamName}
                 onChange={(e) => setNewTeamName(e.target.value)}
-                placeholder="New Team Name"
-                className="border p-2 rounded-md w-full sm:flex-grow dark:bg-gray-700 dark:text-white focus:outline-none focus:ring-2 focus:ring-blue-500"
+                placeholder="Enter a team"
+                className="flex-grow px-4 py-2 border rounded-md dark:bg-gray-700 dark:text-white focus:outline-none focus:ring-2 focus:ring-blue-500 max-w-sm"
               />
               <button
                 onClick={handleAddTeam}
-                className="bg-blue-600 text-white px-4 py-2 rounded-md hover:bg-blue-700 transition-colors"
+                className="bg-red-600 text-white font-bold py-2 px-6 rounded-md hover:bg-red-700 transition-colors duration-200 uppercase tracking-wide"
               >
-                Add Team
+                Add
               </button>
             </div>
             {teamError && <p className="text-red-500 text-sm mb-4">{teamError}</p>}
-            {teams.length === 0 ? (
-              <p className="text-gray-500">No teams added yet.</p>
-            ) : (
-              <ul className="space-y-2 mt-4">
-                {teams.map(team => (
-                  <li key={team.id} className="flex justify-between items-center bg-gray-50 dark:bg-gray-700 p-3 rounded-md border border-gray-200 dark:border-gray-600">
-                    <span className="font-medium">{team.name}</span>
-                    <button
-                      onClick={() => handleDeleteTeam(team.id)}
-                      className="bg-red-500 text-white px-3 py-1 rounded-md text-sm hover:bg-red-600 transition-colors"
-                    >
-                      Delete
-                    </button>
-                  </li>
-                ))}
-              </ul>
-            )}
+            
+            {/* Teams Count and Clear Button */}
+            <div className="flex items-center justify-between text-gray-600 dark:text-gray-400 mb-4">
+              <p className="cursor-pointer hover:underline" onClick={handleTeamsCountClick}>
+                Teams: <span className="font-bold">{teams.length}</span>
+                {teams.length > 0 && (
+                  <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5 inline-block ml-2 text-green-500" viewBox="0 0 20 20" fill="currentColor">
+                    <path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.707-9.293a1 1 0 00-1.414-1.414L9 10.586 7.707 9.293a1 1 0 00-1.414 1.414l2 2a1 1 0 001.414 0l4-4z" clipRule="evenodd" />
+                  </svg>
+                )}
+              </p>
+              <button className="text-red-500 hover:text-red-700 transition-colors">
+                <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5 inline-block ml-1" viewBox="0 0 20 20" fill="currentColor">
+                  <path fillRule="evenodd" d="M9 2a1 1 0 00-.894.553L7.382 4H4a1 1 0 000 2v10a2 2 0 002 2h8a2 2 0 002-2V6a1 1 0 100-2h-3.382l-.724-1.447A1 1 0 0011 2H9zM7 8a1 1 0 011-1h4a1 1 0 110 2H8a1 1 0 01-1-1zm1 3a1 1 0 011-1h2a1 1 0 110 2H9a1 1 0 01-1-1zm1 3a1 1 0 011-1h2a1 1 0 110 2H9a1 1 0 01-1-1z" clipRule="evenodd" />
+                </svg>
+              </button>
+            </div>
+
+            <div className="bg-gray-50 dark:bg-gray-700 p-4 rounded-lg border border-gray-300 dark:border-gray-600 h-64 overflow-y-auto">
+              {teams.length === 0 ? (
+                <p className="text-gray-500 text-center py-8">No teams added yet.</p>
+              ) : (
+                <ul className="space-y-2">
+                  {teams.map(team => (
+                    <li key={team.id} className="flex justify-between items-center bg-white dark:bg-gray-800 p-3 rounded-md shadow-sm border border-gray-200 dark:border-gray-600">
+                      <span className="font-medium text-gray-800 dark:text-white">{team.name}</span>
+                      <button
+                        onClick={() => handleDeleteTeam(team.id)}
+                        className="text-red-500 hover:text-red-700 transition-colors"
+                      >
+                         <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" viewBox="0 0 20 20" fill="currentColor">
+                            <path fillRule="evenodd" d="M9 2a1 1 0 00-.894.553L7.382 4H4a1 1 0 000 2v10a2 2 0 002 2h8a2 2 0 002-2V6a1 1 0 100-2h-3.382l-.724-1.447A1 1 0 0011 2H9zM7 8a1 1 0 011-1h4a1 1 0 110 2H8a1 1 0 01-1-1zm1 3a1 1 0 011-1h2a1 1 0 110 2H9a1 1 0 01-1-1zm1 3a1 1 0 011-1h2a1 1 0 110 2H9a1 1 0 01-1-1z" clipRule="evenodd" />
+                          </svg>
+                      </button>
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </div>
+
+            <div className="flex justify-between gap-4 mt-6">
+              <button
+                onClick={() => openModal('Saving list is handled automatically by real-time updates. You can implement export/import functionality here if needed.')}
+                className="bg-green-600 text-white font-bold py-2 px-6 rounded-md hover:bg-green-700 transition-colors duration-200 uppercase tracking-wide flex-grow"
+              >
+                Save List
+              </button>
+              <button
+                onClick={() => openModal('Loading list is handled automatically by real-time updates.')}
+                className="bg-yellow-500 text-white font-bold py-2 px-6 rounded-md hover:bg-yellow-600 transition-colors duration-200 uppercase tracking-wide flex-grow"
+              >
+                Load List
+              </button>
+            </div>
+            
+            <button
+              onClick={handleGenerateFixtures}
+              className="bg-red-600 text-white font-bold py-3 px-6 rounded-md shadow-lg hover:bg-red-700 transition-colors duration-200 uppercase tracking-wide transform hover:scale-105 mt-6"
+            >
+              Create
+            </button>
           </div>
 
-          {/* Fixture Management Section */}
           <div className="bg-white dark:bg-gray-800 p-6 rounded-lg shadow-md border border-gray-200 dark:border-gray-700">
             <h3 className="text-xl font-bold mb-4">📅 Fixture Management</h3>
             <div className="grid grid-cols-1 md:grid-cols-3 gap-3 mb-4">
@@ -410,10 +628,10 @@ export default function TournamentPage() {
                         {fixture.teamA} vs {fixture.teamB}
                       </p>
                       {fixture.timestamp && fixture.timestamp.seconds ? (
-                         <p className="text-sm text-gray-500 dark:text-gray-400">
-                           {new Date(fixture.timestamp.seconds * 1000).toLocaleDateString()}
-                         </p>
-                      ) : (
+                           <p className="text-sm text-gray-500 dark:text-gray-400">
+                             {new Date(fixture.timestamp.seconds * 1000).toLocaleDateString()}
+                           </p>
+                       ) : (
                         <p className="text-sm text-gray-500 dark:text-gray-400">{fixture.date}</p>
                       )}
                       {fixture.status === 'completed' && (
@@ -423,7 +641,7 @@ export default function TournamentPage() {
                       )}
                     </div>
                     <div className="flex gap-2 mt-2 sm:mt-0">
-                      {!fixture.status === 'completed' && (
+                      {fixture.status !== 'completed' && (
                         <button
                           onClick={() => handleUpdateScores(fixture.id, fixture.scoreA, fixture.scoreB)}
                           className="bg-yellow-500 text-white px-3 py-1 rounded-md text-sm hover:bg-yellow-600 transition-colors"
@@ -445,6 +663,115 @@ export default function TournamentPage() {
           </div>
         </div>
       </div>
+
+      {/* Custom Modal Component */}
+      {modalOpen && (
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-4 z-50">
+          <div className="bg-white dark:bg-gray-800 p-6 rounded-lg shadow-xl w-full max-w-sm text-center">
+            {modalCustomContent || (
+              <>
+                <p className="text-lg font-semibold mb-4">{modalMessage}</p>
+                {modalInputRequired && (
+                  <div className="flex flex-col gap-2 mb-4">
+                    {modalInputLabel.split(',').map((label, index) => (
+                      <input
+                        key={index}
+                        type="number"
+                        placeholder={label.trim()}
+                        value={modalInputValue.split(',')[index] || ''}
+                        onChange={(e) => {
+                          const newValues = [...modalInputValue.split(',')];
+                          newValues[index] = e.target.value;
+                          setModalInputValue(newValues.join(','));
+                        }}
+                        className="w-full px-3 py-2 border rounded-md dark:bg-gray-700 dark:text-white"
+                      />
+                    ))}
+                  </div>
+                )}
+              </>
+            )}
+            <div className="flex justify-center gap-4 mt-4">
+              {modalConfirmAction && (
+                <button
+                  onClick={handleModalConfirm}
+                  className="bg-blue-600 text-white px-4 py-2 rounded-md hover:bg-blue-700 transition-colors"
+                >
+                  Confirm
+                </button>
+              )}
+              <button
+                onClick={handleModalCancel}
+                className="bg-gray-400 text-white px-4 py-2 rounded-md hover:bg-gray-500 transition-colors"
+              >
+                {modalConfirmAction ? 'Cancel' : 'Close'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Teams Configuration Modal - Shown when showTeamsConfigModal is true */}
+      {showTeamsConfigModal && (
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-4 z-50">
+          <div className="bg-white dark:bg-gray-800 p-6 rounded-lg shadow-xl w-full max-w-sm text-center">
+            <h3 className="text-xl font-bold mb-4">Teams: {teams.length}</h3>
+            
+            {/* Colors Checkbox */}
+            <div className="flex items-center justify-center gap-2 mb-4">
+              <label className="text-lg font-semibold">Colours:</label>
+              <input
+                type="checkbox"
+                checked={enableColors}
+                onChange={(e) => setEnableColors(e.target.checked)}
+                className="w-5 h-5"
+              />
+            </div>
+
+            {/* Promotion, Europe L., Relegation Inputs */}
+            <div className="flex flex-col gap-3 mb-6">
+              <div className="flex items-center justify-between">
+                <label className="font-semibold text-green-600 dark:text-green-400">Promotion</label>
+                <input
+                  type="number"
+                  value={promotionSpots}
+                  onChange={(e) => setPromotionSpots(e.target.value)}
+                  className="w-20 px-3 py-1 border rounded-md text-center dark:bg-gray-700 dark:text-white"
+                  min="0"
+                />
+              </div>
+              <div className="flex items-center justify-between">
+                <label className="font-semibold text-yellow-600 dark:text-yellow-400">Europe L.</label>
+                <input
+                  type="number"
+                  value={europeLeagueSpots}
+                  onChange={(e) => setEuropeLeagueSpots(e.target.value)}
+                  className="w-20 px-3 py-1 border rounded-md text-center dark:bg-gray-700 dark:text-white"
+                  min="0"
+                />
+              </div>
+              <div className="flex items-center justify-between">
+                <label className="font-semibold text-red-600 dark:text-red-400">Relegation</label>
+                <input
+                  type="number"
+                  value={relegationSpots}
+                  onChange={(e) => setRelegationSpots(e.target.value)}
+                  className="w-20 px-3 py-1 border rounded-md text-center dark:bg-gray-700 dark:text-white"
+                  min="0"
+                />
+              </div>
+            </div>
+
+            {/* CREATE LEAGUE Button inside modal */}
+            <button
+              onClick={handleCreateLeagueFromTeams}
+              className="bg-red-600 text-white font-bold py-3 px-6 rounded-md shadow-lg hover:bg-red-700 transition-colors duration-200 uppercase tracking-wide transform hover:scale-105"
+            >
+              Create League
+            </button>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

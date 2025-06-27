@@ -1,22 +1,20 @@
-// src/main.jsx
 import React from 'react';
 import ReactDOM from 'react-dom/client';
 import App from './App.jsx';
 import './index.css';
-import { initializeAuth } from './firebase.js'; // Import the initializeAuth function
+// import { initializeAuth } from './firebase.js'; // No longer needed here directly
 
-// Initialize Firebase Auth when the application starts
-// This ensures the user is authenticated before the App component renders fully.
-initializeAuth().then(() => {
-  const root = document.getElementById('root');
-  ReactDOM.createRoot(root).render(
-    <React.StrictMode>
-      <App />
-    </React.StrictMode>
-  );
-}).catch(error => {
-  console.error("Failed to initialize Firebase Auth:", error);
-  // Optionally display an error message to the user if auth initialization fails
-  const root = document.getElementById('root');
-  root.innerHTML = '<div style="color: red; text-align: center; padding: 20px;">Error loading application: Could not connect to authentication services.</div>';
-});
+const root = document.getElementById('root');
+
+// Display a loading message immediately while React app mounts and auth state is determined
+root.innerHTML = '<div style="min-height: 100vh; display: flex; align-items: center; justify-content: center; background-color: #f3f4f6; color: #1f2937;">Loading application...</div>';
+
+// Now just render the App component, which will handle auth state internally
+ReactDOM.createRoot(root).render(
+  <React.StrictMode>
+    <App />
+  </React.StrictMode>
+);
+
+// The error handling for initial Firebase auth setup (like config issues)
+// will now be caught by the useAuth hook and propagated to the App component's error state.
