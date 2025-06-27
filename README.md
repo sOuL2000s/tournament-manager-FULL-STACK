@@ -1,1 +1,1 @@
-check out the website here: https://tournament-manager-full-stack.onrender.com
+check out the website here: https://tournament-manager-website.netlify.app/
