@@ -1,8 +1,10 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useState, useCallback } from 'react';
 import { useParams, Link } from 'react-router-dom';
 import { db } from '../firebase';
 import { doc, getDoc, collection, addDoc, query, orderBy, onSnapshot, updateDoc, deleteDoc } from 'firebase/firestore'; // Import necessary Firestore functions
 import { useAuth } from '../hooks/useAuth'; // Import useAuth for authentication state
+// Note: This component implements its own inline modal.
+// The import 'Modal from '../components/Modal';' is present but not used for rendering.
 
 export default function KnockoutPage() {
   const { id: tournamentId } = useParams();
@@ -24,16 +26,17 @@ export default function KnockoutPage() {
   const [editingMatchId, setEditingMatchId] = useState(null); // State for editing match
   const [editMatchData, setEditMatchData] = useState({}); // State for edited match data
 
-  // Custom Modal Component states (copied for consistency)
+  // Custom Modal Component states (inline implementation within this component)
   const [modalOpen, setModalOpen] = useState(false);
   const [modalMessage, setModalMessage] = useState('');
-  const [modalConfirmAction, setModalConfirmAction] = useState(null); // Set to null initially
+  const [modalConfirmAction, setModalConfirmAction] = useState(null);
   const [modalInputRequired, setModalInputRequired] = useState(false);
-  const [modalInputLabel, setModalInputLabel] = useState('');
-  const [modalInputValue, setModalInputValue] = useState('');
-  const [modalCustomContent, setModalCustomContent] = useState(null);
+  const [modalInputLabel, setModalInputLabel] = useState(''); // Used for generic input labels
+  const [modalInputValue, setModalInputValue] = useState(''); // Used for generic input value
+  const [modalCustomContent, setModalCustomContent] = useState(null); // For rendering custom JSX inside modal
 
-  const openModal = (message, confirmAction = null, inputRequired = false, inputLabel = '', initialValue = '', customContent = null) => {
+  // Function to open the custom inline modal
+  const openModal = useCallback((message, confirmAction = null, inputRequired = false, inputLabel = '', initialValue = '', customContent = null) => {
     setModalMessage(message);
     setModalConfirmAction(() => confirmAction); // Wrap in arrow function to prevent immediate execution
     setModalInputRequired(inputRequired);
@@ -41,9 +44,10 @@ export default function KnockoutPage() {
     setModalInputValue(initialValue);
     setModalCustomContent(customContent);
     setModalOpen(true);
-  };
+  }, []); // useCallback for memoization
 
-  const handleModalConfirm = () => {
+  // Function to handle modal confirmation
+  const handleModalConfirm = useCallback(() => {
     if (modalConfirmAction) {
       if (modalInputRequired) {
         modalConfirmAction(modalInputValue);
@@ -55,14 +59,15 @@ export default function KnockoutPage() {
     setModalInputValue('');
     setModalConfirmAction(null); // Clear action after execution
     setModalCustomContent(null); // Clear custom content
-  };
+  }, [modalConfirmAction, modalInputRequired, modalInputValue]); // Depend on values that might change
 
-  const handleModalCancel = () => {
+  // Function to handle modal cancellation/closing
+  const handleModalCancel = useCallback(() => {
     setModalOpen(false);
     setModalInputValue('');
     setModalConfirmAction(null); // Clear action
     setModalCustomContent(null); // Clear custom content
-  };
+  }, []); // useCallback for memoization
 
 
   useEffect(() => {
@@ -164,36 +169,45 @@ export default function KnockoutPage() {
 
   const handleAddMatch = async () => {
     if (!newMatch.round.trim() || !newMatch.teamA.trim() || !newMatch.teamB.trim()) {
-      openModal('Please fill in all match details.');
+      openModal('Please fill in all match details.', null); // Pass null for confirmAction as it's just an alert
       return;
     }
     try {
       await addDoc(collection(db, `tournaments/${tournamentId}/knockoutMatches`), newMatch);
       setNewMatch({ round: '', teamA: '', teamB: '', winner: null, scoreA: 0, scoreB: 0, status: 'scheduled' });
       setIsAddingMatch(false);
-      openModal('Match added successfully!', null);
+      openModal('Match added successfully!', null); // Pass null for confirmAction
     } catch (err) {
       console.error('Error adding match:', err);
-      openModal('Failed to add match. Please try again.');
+      openModal('Failed to add match. Please try again.', null); // Pass null for confirmAction
     }
   };
 
   const handleUpdateMatch = async (matchId) => {
+    // Basic validation for score inputs before update
+    const parsedScoreA = parseInt(editMatchData.scoreA);
+    const parsedScoreB = parseInt(editMatchData.scoreB);
+
+    if (isNaN(parsedScoreA) || isNaN(parsedScoreB)) {
+      openModal('Invalid Input', 'Please enter valid numbers for scores.', null); // Simplified call for error
+      return;
+    }
+
     try {
       const matchRef = doc(db, `tournaments/${tournamentId}/knockoutMatches`, matchId);
       const updatedData = {
-        scoreA: parseInt(editMatchData.scoreA),
-        scoreB: parseInt(editMatchData.scoreB),
+        scoreA: parsedScoreA,
+        scoreB: parsedScoreB,
         status: 'completed',
-        winner: parseInt(editMatchData.scoreA) > parseInt(editMatchData.scoreB) ? editMatchData.teamA : parseInt(editMatchData.scoreA) < parseInt(editMatchData.scoreB) ? editMatchData.teamB : 'Draw' // Determine winner
+        winner: parsedScoreA > parsedScoreB ? editMatchData.teamA : parsedScoreA < parsedScoreB ? editMatchData.teamB : 'Draw' // Determine winner
       };
       await updateDoc(matchRef, updatedData);
       setEditingMatchId(null); // Exit editing mode
       setEditMatchData({}); // Clear edit data
-      openModal('Match updated successfully!', null);
+      openModal('Match updated successfully!', null); // Pass null for confirmAction
     } catch (err) {
       console.error('Error updating match:', err);
-      openModal('Failed to update match. Please try again.');
+      openModal('Failed to update match. Please try again.', null); // Pass null for confirmAction
     }
   };
 
@@ -201,17 +215,22 @@ export default function KnockoutPage() {
     openModal('Are you sure you want to delete this match?', async () => { // Use custom modal
       try {
         await deleteDoc(doc(db, `tournaments/${tournamentId}/knockoutMatches`, matchId));
-        openModal('Match deleted successfully!', null);
+        openModal('Match deleted successfully!', null); // Pass null for confirmAction
       } catch (err) {
         console.error('Error deleting match:', err);
-        openModal('Failed to delete match. Please try again.');
+        openModal('Failed to delete match. Please try again.', null); // Pass null for confirmAction
       }
     });
   };
 
   const startEditing = (match) => {
     setEditingMatchId(match.id);
-    setEditMatchData({ ...match }); // Copy current match data for editing
+    // Ensure scores are treated as strings for input value, convert null/undefined to empty string
+    setEditMatchData({
+      ...match,
+      scoreA: match.scoreA !== undefined && match.scoreA !== null ? String(match.scoreA) : '',
+      scoreB: match.scoreB !== undefined && match.scoreB !== null ? String(match.scoreB) : ''
+    });
   };
 
   const cancelEditing = () => {
@@ -225,7 +244,10 @@ export default function KnockoutPage() {
       <div className="bg-red-600 text-white p-4 flex justify-around font-bold text-lg">
         <Link to={`/tournament/${tournamentId}`} className="flex-1 text-center py-2 px-1 hover:bg-red-700 transition-colors">LEAGUE</Link>
         <Link to={`/tournament/${tournamentId}/fixtures`} className="flex-1 text-center py-2 px-1 hover:bg-red-700 transition-colors">FIXTURES</Link>
-        <Link to={`/tournament/${tournamentId}/players`} className="flex-1 text-center py-2 px-1 hover:bg-red-700 transition-colors">TOP SCORERS</Link>
+        {/* Changed 'Players' to 'Top Scorers' as per previous context/images */}
+        <Link to={`/tournament/${tournamentId}/top-scorers`} className="flex-1 text-center py-2 px-1 hover:bg-red-700 transition-colors">TOP SCORERS</Link>
+        {/* Adding a specific link for Knockout stage itself */}
+        <Link to={`/tournament/${tournamentId}/knockout`} className="flex-1 text-center py-2 px-1 hover:bg-red-700 transition-colors">KNOCKOUT</Link>
       </div>
 
       <div className="p-6 max-w-5xl mx-auto w-full">
@@ -247,21 +269,21 @@ export default function KnockoutPage() {
                 placeholder="Round Name (e.g., Quarter-Finals)"
                 value={newMatch.round}
                 onChange={e => setNewMatch({ ...newMatch, round: e.target.value })}
-                className="px-3 py-2 border rounded dark:bg-gray-700 dark:text-white"
+                className="px-3 py-2 border rounded dark:bg-gray-700 dark:text-white focus:outline-none focus:ring-2 focus:ring-blue-500"
               />
               <input
                 type="text"
                 placeholder="Team A Name"
                 value={newMatch.teamA}
                 onChange={e => setNewMatch({ ...newMatch, teamA: e.target.value })}
-                className="px-3 py-2 border rounded dark:bg-gray-700 dark:text-white"
+                className="px-3 py-2 border rounded dark:bg-gray-700 dark:text-white focus:outline-none focus:ring-2 focus:ring-blue-500"
               />
               <input
                 type="text"
                 placeholder="Team B Name"
                 value={newMatch.teamB}
                 onChange={e => setNewMatch({ ...newMatch, teamB: e.target.value })}
-                className="px-3 py-2 border rounded dark:bg-gray-700 dark:text-white"
+                className="px-3 py-2 border rounded dark:bg-gray-700 dark:text-white focus:outline-none focus:ring-2 focus:ring-blue-500"
               />
             </div>
             <button
@@ -304,7 +326,7 @@ export default function KnockoutPage() {
                               type="number"
                               value={editMatchData.scoreA}
                               onChange={e => setEditMatchData({ ...editMatchData, scoreA: e.target.value })}
-                              className="w-16 px-2 py-1 border rounded text-center dark:bg-gray-600 dark:text-white"
+                              className="w-16 px-2 py-1 border rounded text-center dark:bg-gray-600 dark:text-white focus:outline-none focus:ring-2 focus:ring-blue-500"
                               placeholder="0"
                               min="0"
                             />
@@ -313,7 +335,7 @@ export default function KnockoutPage() {
                               type="number"
                               value={editMatchData.scoreB}
                               onChange={e => setEditMatchData({ ...editMatchData, scoreB: e.target.value })}
-                              className="w-16 px-2 py-1 border rounded text-center dark:bg-gray-600 dark:text-white"
+                              className="w-16 px-2 py-1 border rounded text-center dark:bg-gray-600 dark:text-white focus:outline-none focus:ring-2 focus:ring-blue-500"
                               placeholder="0"
                               min="0"
                             />
@@ -375,19 +397,20 @@ export default function KnockoutPage() {
         )}
       </div>
 
-      {/* Custom Modal Component */}
+      {/* Custom Modal Component (Inline) for this page's alerts/confirms */}
       {modalOpen && (
         <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-4 z-50">
           <div className="bg-white dark:bg-gray-800 p-6 rounded-lg shadow-xl w-full max-w-sm text-center">
+            {/* Renders custom content if provided, otherwise default message/input */}
             {modalCustomContent || (
               <>
                 <p className="text-lg font-semibold mb-4">{modalMessage}</p>
-                {modalInputRequired && (
+                {modalInputRequired && ( // Conditional rendering for generic input field(s)
                   <div className="flex flex-col gap-2 mb-4">
                     {modalInputLabel.split(',').map((label, index) => (
                       <input
                         key={index}
-                        type="text" // Use text for generic modal input as it might not always be number
+                        type="text" // Using type="text" for generic string input here
                         placeholder={label.trim()}
                         value={modalInputValue.split(',')[index] || ''}
                         onChange={(e) => {
@@ -395,7 +418,7 @@ export default function KnockoutPage() {
                           newValues[index] = e.target.value;
                           setModalInputValue(newValues.join(','));
                         }}
-                        className="w-full px-3 py-2 border rounded-md dark:bg-gray-700 dark:text-white"
+                        className="w-full px-3 py-2 border rounded-md dark:bg-gray-700 dark:text-white focus:outline-none focus:ring-2 focus:ring-blue-500"
                       />
                     ))}
                   </div>
@@ -403,7 +426,7 @@ export default function KnockoutPage() {
               </>
             )}
             <div className="flex justify-center gap-4 mt-4">
-              {modalConfirmAction && (
+              {modalConfirmAction && ( // Only show confirm button if a confirm action is provided
                 <button
                   onClick={handleModalConfirm}
                   className="bg-blue-600 text-white px-4 py-2 rounded-md hover:bg-blue-700 transition-colors"
@@ -415,7 +438,7 @@ export default function KnockoutPage() {
                 onClick={handleModalCancel}
                 className="bg-gray-400 text-white px-4 py-2 rounded-md hover:bg-gray-500 transition-colors"
               >
-                {modalConfirmAction ? 'Cancel' : 'Close'}
+                {modalConfirmAction ? 'Cancel' : 'Close'} {/* Text changes based on confirm action presence */}
               </button>
             </div>
           </div>

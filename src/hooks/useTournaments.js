@@ -20,7 +20,7 @@ export const useTournaments = () => {
       }
     });
     return () => unsubscribeAuth();
-  }, []);
+  }, []); // Empty dependency array: runs once on mount, cleans up on unmount
 
   // Real-time listener for tournaments, now filtered by userId
   useEffect(() => {
@@ -62,7 +62,9 @@ export const useTournaments = () => {
   // Function to create a new tournament, now requiring userId
   const createTournament = async (tournamentData) => {
     if (!userId) {
-      throw new Error('User not authenticated. Cannot create tournament.');
+      // It's good to provide a more specific error or handle this in the UI
+      console.error('Attempted to create tournament without authenticated user.');
+      throw new Error('Authentication required to create a tournament.');
     }
     try {
       const docRef = await addDoc(collection(db, 'tournaments'), {
@@ -74,7 +76,7 @@ export const useTournaments = () => {
       return docRef.id;
     } catch (err) {
       console.error('Error creating tournament:', err);
-      throw new Error('Failed to create tournament.');
+      throw new Error('Failed to create tournament.'); // Re-throw a generic error for the calling component
     }
   };
 

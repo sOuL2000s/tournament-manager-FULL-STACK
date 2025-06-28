@@ -9,7 +9,8 @@ export default function ProtectedRoute({ children }) {
     // Optionally render a loading spinner or message while auth state is being determined
     return (
       <div className="min-h-screen flex items-center justify-center bg-gray-100 dark:bg-gray-900 text-gray-900 dark:text-white">
-        Checking authentication...
+        {/* Using a simple loading indicator, could be a spinner */}
+        <p className="text-lg font-semibold animate-pulse">Checking authentication...</p>
       </div>
     );
   }

@@ -3,18 +3,24 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <meta name="theme-color" content="#1f2937" /> <!-- Defines a theme color for the browser UI -->
+    <meta name="theme-color" content="#1f2937" /> <!-- Defines a theme color for the browser UI, useful for mobile browsers -->
     <title>Tournament Manager</title>
-    <link rel="icon" type="image/svg+xml" href="/favicon.svg" /> <!-- Link to the favicon -->
-    <!-- Preconnect to Google Fonts for Inter font for better performance -->
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg" /> <!-- Link to the favicon for the browser tab -->
+    
+    <!-- Preconnect to Google Fonts domains for improved loading performance of fonts -->
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-    <!-- Link to the Inter font from Google Fonts -->
+    <!-- Link to the 'Inter' font from Google Fonts. Loads weights 400, 500, 600, 700. -->
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
   </head>
-  <!-- Apply base Tailwind CSS classes for background and text colors -->
+  <!-- 
+    Apply base Tailwind CSS classes for background and text colors.
+    'bg-gray-100' and 'text-gray-900' for light mode.
+    'dark:bg-gray-900' and 'dark:text-white' for dark mode (controlled by 'dark' class on html element via JavaScript).
+    'font-inter' class ensures the 'Inter' font is used throughout the body.
+  -->
   <body class="bg-gray-100 text-gray-900 dark:bg-gray-900 dark:text-white font-inter">
-    <div id="root"></div> <!-- Root element where the React app will be mounted -->
-    <script type="module" src="/src/main.jsx"></script> <!-- Entry point for the React application -->
+    <div id="root"></div> <!-- This is the root element where your React application will be mounted by main.jsx -->
+    <script type="module" src="/src/main.jsx"></script> <!-- This script tag is the entry point for your client-side React application -->
   </body>
 </html>

@@ -3,6 +3,9 @@ import { Link, useNavigate } from 'react-router-dom';
 import { useTournaments } from '../hooks/useTournaments'; // Import useTournaments from the hook
 import { db } from '../firebase'; // Import db
 import { doc, deleteDoc, collection, getDocs } from 'firebase/firestore'; // Import necessary Firestore functions
+// Assuming you have a Modal component in components/Modal.jsx
+// If you don't use the shared Modal component here, it's okay, but consistency is good practice.
+// import Modal from '../components/Modal'; // Uncomment if you want to use the shared Modal
 
 export default function Dashboard() {
   const { tournaments, loading, error, createTournament } = useTournaments(); // Get createTournament from hook
@@ -19,13 +22,15 @@ export default function Dashboard() {
   const [createError, setCreateError] = useState(null); // State for create tournament errors
   const navigate = useNavigate();
 
-  // Custom Modal Component states (copied from TournamentPage for consistency)
+  // Custom Modal Component states (inline, for this Dashboard component only)
+  // These states and logic are for the modal defined directly within this file,
+  // not the reusable Modal component imported from '../components/Modal'.
   const [modalOpen, setModalOpen] = useState(false);
   const [modalMessage, setModalMessage] = useState('');
   const [modalConfirmAction, setModalConfirmAction] = useState(null);
   const [modalInputRequired, setModalInputRequired] = useState(false);
   const [modalInputLabel, setModalInputLabel] = useState('');
-  const [modalInputValue, setModalInputValue] = useState('');
+  const [modalInputValue, setModalInputValue] = useState(''); // Stores comma-separated values for multiple inputs
   const [modalCustomContent, setModalCustomContent] = useState(null);
 
   const openModal = (message, confirmAction = null, inputRequired = false, inputLabel = '', initialValue = '', customContent = null) => {
@@ -278,7 +283,7 @@ export default function Dashboard() {
                 <input
                   type="number"
                   value={pointsPerWin}
-                  onChange={e => setPointsPerWin(parseInt(e.target.value))}
+                  onChange={e => setPointsPerWin(parseInt(e.target.value) || 0)} // Added || 0 for safer parsing
                   className="px-4 py-2 border rounded-md w-20 text-center dark:bg-gray-700 dark:text-white focus:outline-none focus:ring-2 focus:ring-blue-500"
                   min="0"
                 />
@@ -288,7 +293,7 @@ export default function Dashboard() {
                 <input
                   type="number"
                   value={pointsPerDraw}
-                  onChange={e => setPointsPerDraw(parseInt(e.target.value))}
+                  onChange={e => setPointsPerDraw(parseInt(e.target.value) || 0)} // Added || 0 for safer parsing
                   className="px-4 py-2 border rounded-md w-20 text-center dark:bg-gray-700 dark:text-white focus:outline-none focus:ring-2 focus:ring-blue-500"
                   min="0"
                 />
@@ -353,27 +358,31 @@ export default function Dashboard() {
         )}
       </div>
 
-      {/* Custom Modal Component (from TournamentPage for reusability) */}
+      {/* Custom Modal Component (Inline implementation for Dashboard's specific needs) */}
       {modalOpen && (
         <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-4 z-50">
           <div className="bg-white dark:bg-gray-800 p-6 rounded-lg shadow-xl w-full max-w-sm text-center">
+            {/* Conditional rendering for custom content or default message/input */}
             {modalCustomContent || (
               <>
                 <p className="text-lg font-semibold mb-4">{modalMessage}</p>
                 {modalInputRequired && (
                   <div className="flex flex-col gap-2 mb-4">
+                    {/* Maps over labels to create multiple inputs if needed.
+                        The value and onChange logic handles them as a comma-separated string. */}
                     {modalInputLabel.split(',').map((label, index) => (
                       <input
-                        key={index}
-                        type="text" // Can be text for generic input, or number if specifically needed
+                        key={index} // Important for React list rendering
+                        type="text" // Can be changed to "number" if input is strictly numeric
                         placeholder={label.trim()}
+                        // This value logic is for handling multiple inputs with a single state string
                         value={modalInputValue.split(',')[index] || ''}
                         onChange={(e) => {
                           const newValues = modalInputValue.split(',');
                           newValues[index] = e.target.value;
                           setModalInputValue(newValues.join(','));
                         }}
-                        className="w-full px-3 py-2 border rounded-md dark:bg-gray-700 dark:text-white"
+                        className="w-full px-3 py-2 border rounded-md dark:bg-gray-700 dark:text-white focus:outline-none focus:ring-2 focus:ring-blue-500"
                       />
                     ))}
                   </div>

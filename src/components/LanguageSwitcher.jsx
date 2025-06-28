@@ -10,6 +10,7 @@ export default function LanguageSwitcher({ lang, setLang }) {
         localStorage.setItem('lang', e.target.value); // Persist the selected language in local storage
       }}
       className="border px-2 py-1 rounded bg-white dark:bg-gray-800 dark:text-white focus:outline-none focus:ring-2 focus:ring-blue-500"
+      aria-label="Select application language" // Added for improved accessibility
     >
       {/* Language Options with Emojis */}
       <option value="en">🇬🇧 English</option>

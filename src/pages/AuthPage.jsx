@@ -8,24 +8,13 @@ export default function AuthPage() {
   const [isRegisterMode, setIsRegisterMode] = useState(false); // State to toggle between login/register views
   const [errorMessage, setErrorMessage] = useState(''); // Local error message for UI display
 
-  const handleSubmit = async (e) => {
-    e.preventDefault();
-    setErrorMessage(''); // Clear previous error messages
-
-    try {
-      if (isRegisterMode) {
-        await register(email, password);
-        setErrorMessage('Registration successful! Please log in.');
-        setIsRegisterMode(false); // Switch to login mode after successful registration
-      } else {
-        await login(email, password);
-        // On successful login, useAuth hook's listener will update user state in App.jsx,
-        // triggering navigation. No explicit setToken or localStorage.setItem('token') needed here.
-      }
-    } catch (err) {
-      // Firebase auth errors have a 'code' property
+  // Effect to listen to the global error from useAuth and display it
+  // This ensures any backend authentication errors caught by the hook are reflected here.
+  React.useEffect(() => {
+    if (error) {
+      // Mapping Firebase error codes to user-friendly messages for immediate display
       let friendlyError = 'An unexpected error occurred.';
-      switch (err.code) {
+      switch (error.code) {
         case 'auth/invalid-email':
           friendlyError = 'Invalid email address format.';
           break;
@@ -46,10 +35,30 @@ export default function AuthPage() {
           friendlyError = 'Network error. Please check your internet connection.';
           break;
         default:
-          friendlyError = err.message; // Fallback to Firebase's message
+          friendlyError = error.message; // Fallback to Firebase's message
       }
       setErrorMessage(friendlyError);
-      console.error("Auth operation failed:", err); // Log full error for debugging
+    }
+  }, [error]); // Depend on the 'error' state from useAuth
+
+  const handleSubmit = async (e) => {
+    e.preventDefault();
+    setErrorMessage(''); // Clear previous error messages before new attempt
+
+    try {
+      if (isRegisterMode) {
+        await register(email, password);
+        setErrorMessage('Registration successful! Please log in.');
+        setIsRegisterMode(false); // Switch to login mode after successful registration
+      } else {
+        await login(email, password);
+        // On successful login, useAuth hook's listener will update user state in App.jsx,
+        // triggering navigation. No explicit setToken or localStorage.setItem('token') needed here.
+      }
+    } catch (err) {
+      // The useAuth hook already sets the global 'error' state, which this component's
+      // useEffect will pick up. No need to set local errorMessage here again.
+      console.error("Auth operation failed in AuthPage:", err); // Log full error for debugging
     }
   };
 
@@ -78,7 +87,7 @@ export default function AuthPage() {
             aria-label="Password"
             required
           />
-          {errorMessage && (
+          {errorMessage && ( // Display local error messages
             <p className="text-red-500 text-sm mb-4 text-center">{errorMessage}</p>
           )}
           <button

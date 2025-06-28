@@ -1,51 +1,66 @@
 /* index.css */
+/* Tailwind CSS imports */
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
 
 /* Custom scrollbar styles for a cleaner look */
-/* For Webkit browsers (Chrome, Safari) */
+/* These styles apply to Webkit browsers (Chrome, Safari, Edge) */
 ::-webkit-scrollbar {
-  width: 8px;
-  height: 8px; /* For horizontal scrollbars */
+  width: 8px; /* Width of the vertical scrollbar */
+  height: 8px; /* Height of the horizontal scrollbar */
 }
 
 ::-webkit-scrollbar-track {
-  background: #f1f1f1; /* Light background for the track */
-  border-radius: 10px;
+  background: #f1f1f1; /* Light background for the scrollbar track in light mode */
+  border-radius: 10px; /* Rounded corners for the track */
 }
 
+/* Dark mode specific scrollbar track color */
 html.dark ::-webkit-scrollbar-track {
   background: #333; /* Darker background for the track in dark mode */
 }
 
 ::-webkit-scrollbar-thumb {
-  background: #888; /* Gray thumb */
-  border-radius: 10px;
+  background: #888; /* Gray thumb (the draggable part) in light mode */
+  border-radius: 10px; /* Rounded corners for the thumb */
 }
 
+/* Dark mode specific scrollbar thumb color */
 html.dark ::-webkit-scrollbar-thumb {
   background: #555; /* Darker thumb in dark mode */
 }
 
 ::-webkit-scrollbar-thumb:hover {
-  background: #555; /* Darker gray on hover */
+  background: #555; /* Darker gray on hover for the thumb in light mode */
 }
 
+/* Dark mode specific scrollbar thumb hover color */
 html.dark ::-webkit-scrollbar-thumb:hover {
-  background: #777; /* Lighter gray on hover in dark mode */
+  background: #777; /* Lighter gray on hover for the thumb in dark mode */
 }
 
-/* Ensure font consistency across the app */
+/* Ensure font consistency across the application */
+/* Using 'Inter' font as per project instructions. Falls back to generic sans-serif. */
 body {
-  font-family: 'Inter', sans-serif; /* Using Inter font as per instructions */
+  font-family: 'Inter', sans-serif;
 }
 
-/* Base styles for dark mode transition */
-html.dark {
-  transition: background-color 0.3s ease-in-out;
-}
-
-body {
+/* Base styles for dark mode transition, applied to the html and body elements */
+/* This creates a smooth visual transition when toggling dark/light mode. */
+html {
+  /* Define CSS variables for global text and background colors based on mode */
+  --text-color: #1f2937; /* Default text color for light mode */
+  --background-color: #ffffff; /* Default background color for light mode */
   transition: background-color 0.3s ease-in-out, color 0.3s ease-in-out;
+}
+
+html.dark {
+  --text-color: #f3f4f6; /* Text color for dark mode */
+  --background-color: #1a202c; /* Background color for dark mode (e.g., gray-900) */
+}
+
+body {
+  background-color: var(--background-color);
+  color: var(--text-color);
 }
