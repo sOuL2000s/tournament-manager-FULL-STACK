@@ -1,4 +1,4 @@
-import React, { useEffect, useState, useCallback } from 'react';
+import React, { useEffect, useState, useCallback, useRef } from 'react'; // Added useRef
 import { db } from '../firebase';
 import {
   collection,
@@ -18,6 +18,8 @@ import { Link, useNavigate, useParams } from 'react-router-dom';
 import { useAuth } from '../hooks/useAuth';
 // Import the shared Modal component. This is the preferred way to handle modals.
 import Modal from '../components/Modal';
+// Import the new dedicated component for score inputs
+import ScoreInputModalContent from '../components/ScoreInputModalContent';
 
 export default function TournamentPage() {
   const { id: tournamentId } = useParams();
@@ -49,8 +51,14 @@ export default function TournamentPage() {
   const [modalShowConfirmButton, setModalShowConfirmButton] = useState(true);
 
   // Score Update Modal State (These are for the *inputs* within the modal content)
-  const [tempScoreA, setTempScoreA] = useState('');
-  const [tempScoreB, setTempScoreB] = useState('');
+  // REMOVED tempScoreA, setTempScoreA, tempScoreB, setTempScoreB from THIS component
+  // They are now managed within ScoreInputModalContent.jsx
+
+  // REF to access the ScoreInputModalContent component's methods (like getScoreA/B)
+  const scoreInputRef = useRef(null);
+  // State to hold the specific fixture being updated when the modal is open
+  const [currentFixtureToUpdate, setCurrentFixtureToUpdate] = useState(null);
+
 
   // Tournament Configuration State (now directly in the main settings section)
   const [enableColors, setEnableColors] = useState(false);
@@ -78,9 +86,7 @@ export default function TournamentPage() {
     setModalContent(null);
     setModalConfirmAction(null);
     setModalShowConfirmButton(true);
-    // Clear temp scores when modal closes
-    setTempScoreA('');
-    setTempScoreB('');
+    // No need to clear temp scores here, as they are now local to ScoreInputModalContent
   }, []); // Memoize the function
 
   // --- Effect to fetch Tournament Details ---
@@ -606,97 +612,86 @@ export default function TournamentPage() {
     );
   };
 
+  // UPDATED handleUpdateScores to use ScoreInputModalContent
   const handleUpdateScores = useCallback(async (fixtureId, currentScoreA, currentScoreB) => {
     const fixtureToUpdate = fixtures.find(f => f.id === fixtureId);
-    if (!fixtureToUpdate) return;
+    if (!fixtureToUpdate) {
+      console.warn(`Fixture with ID ${fixtureId} not found.`);
+      return;
+    }
 
-    // Set initial values for the modal inputs
-    setTempScoreA(currentScoreA !== undefined && currentScoreA !== null ? String(currentScoreA) : '');
-    setTempScoreB(currentScoreB !== undefined && currentScoreB !== null ? String(currentScoreB) : '');
+    // Set the specific fixture being updated in state
+    setCurrentFixtureToUpdate(fixtureToUpdate);
 
+    // Define the confirmation logic that will run when the modal's Confirm button is clicked
+    const confirmAction = async () => {
+      // Read the scores directly from the ScoreInputModalContent component via ref
+      // Ensure scoreInputRef.current exists before attempting to read
+      if (!scoreInputRef.current) {
+        console.error("scoreInputRef.current is null. ScoreInputModalContent might not be mounted or ref not attached.");
+        openCustomModal('Error', 'Internal error: Cannot read scores. Please try again.', null, false);
+        return;
+      }
+
+      const parsedScoreA = parseInt(scoreInputRef.current.getScoreA());
+      const parsedScoreB = parseInt(scoreInputRef.current.getScoreB());
+
+      if (isNaN(parsedScoreA) || isNaN(parsedScoreB)) {
+        // Re-open modal with error message, don't close it, and retain input values
+        openCustomModal('Invalid Input', 'Please enter valid numbers for scores.', null, false, (
+          // Pass the current fixture and the *last known input values* back to ScoreInputModalContent for persistence
+          // Use the values from the ref, as they are the latest user input
+          <ScoreInputModalContent
+            ref={scoreInputRef} // Re-attach ref for the new render of ScoreInputModalContent
+            fixture={fixtureToUpdate}
+            initialScoreA={scoreInputRef.current.getScoreA()}
+            initialScoreB={scoreInputRef.current.getScoreB()}
+          />
+        ));
+        return; // Important: Stop execution here if validation fails
+      }
+
+      try {
+        const fixtureRef = doc(db, `tournaments/${tournamentId}/fixtures`, fixtureId);
+        await updateDoc(fixtureRef, {
+          scoreA: parsedScoreA,
+          scoreB: parsedScoreB,
+          status: 'completed'
+        });
+        closeCustomModal(); // Close the score update modal on success
+        updateLeaderboard(); // Trigger leaderboard update after score update
+      } catch (err) {
+        console.error('Error updating scores:', err);
+        // Re-open modal with error, retain input values
+        openCustomModal('Error', 'Failed to update scores. Please try again.', null, false, (
+          // Pass the current fixture and the *last known input values* back to ScoreInputModalContent for persistence
+          <ScoreInputModalContent
+            ref={scoreInputRef} // Re-attach ref for the new render of ScoreInputModalContent
+            fixture={fixtureToUpdate}
+            initialScoreA={scoreInputRef.current.getScoreA()}
+            initialScoreB={scoreInputRef.current.getScoreB()}
+          />
+        ));
+      }
+    };
+
+    // Open the modal, passing ScoreInputModalContent as the 'content' prop
+    // We pass initialScoreA/B to ScoreInputModalContent via props
     openCustomModal(
       'Update Match Scores',
       `Enter scores for ${fixtureToUpdate.teamA} vs ${fixtureToUpdate.teamB}:`,
-      async () => {
-        const parsedScoreA = parseInt(tempScoreA);
-        const parsedScoreB = parseInt(tempScoreB);
-
-        if (isNaN(parsedScoreA) || isNaN(parsedScoreB)) {
-          // Re-open modal with error message, don't close it, and retain input values
-          openCustomModal('Invalid Input', 'Please enter valid numbers for scores.', null, false, (
-            <div className="flex flex-col gap-3 mb-4">
-              <input
-                type="text" // <--- CHANGED FROM "number" TO "text"
-                placeholder="Score for Team A"
-                value={tempScoreA}
-                onChange={(e) => setTempScoreA(e.target.value)}
-                className="w-full px-3 py-2 border rounded-md dark:bg-gray-700 dark:text-white focus:outline-none focus:ring-2 focus:ring-blue-500"
-              />
-              <input
-                type="text" // <--- CHANGED FROM "number" TO "text"
-                placeholder="Score for Team B"
-                value={tempScoreB}
-                onChange={(e) => setTempScoreB(e.target.value)}
-                className="w-full px-3 py-2 border rounded-md dark:bg-gray-700 dark:text-white focus:outline-none focus:ring-2 focus:ring-blue-500"
-              />
-            </div>
-          ));
-          return;
-        }
-
-        try {
-          const fixtureRef = doc(db, `tournaments/${tournamentId}/fixtures`, fixtureId);
-          await updateDoc(fixtureRef, {
-            scoreA: parsedScoreA,
-            scoreB: parsedScoreB,
-            status: 'completed'
-          });
-          closeCustomModal(); // Close the score update modal on success
-          updateLeaderboard(); // Trigger leaderboard update after score update
-        } catch (err) {
-          console.error('Error updating scores:', err);
-          // Re-open modal with error, retain input values
-          openCustomModal('Error', 'Failed to update scores. Please try again.', null, false, (
-            <div className="flex flex-col gap-3 mb-4">
-              <input
-                type="text" // <--- CHANGED FROM "number" TO "text"
-                placeholder="Score for Team A"
-                value={tempScoreA}
-                onChange={(e) => setTempScoreA(e.target.value)}
-                className="w-full px-3 py-2 border rounded-md dark:bg-gray-700 dark:text-white focus:outline-none focus:ring-2 focus:ring-blue-500"
-              />
-              <input
-                type="text" // <--- CHANGED FROM "number" TO "text"
-                placeholder="Score for Team B"
-                value={tempScoreB}
-                onChange={(e) => setTempScoreB(e.target.value)}
-                className="w-full px-3 py-2 border rounded-md dark:bg-gray-700 dark:text-white focus:outline-none focus:ring-2 focus:ring-blue-500"
-              />
-            </div>
-          ));
-        }
-      },
+      confirmAction, // This is the logic to run on confirm
       true, // showConfirmButton
-      ( // Custom content for modal with score inputs
-        <div className="flex flex-col gap-3 mb-4">
-          <input
-            type="text" // <--- CHANGED FROM "number" TO "text"
-            placeholder="Score for Team A"
-            value={tempScoreA} // Bind value to state
-            onChange={(e) => setTempScoreA(e.target.value)} // Update state on change
-            className="w-full px-3 py-2 border rounded-md dark:bg-gray-700 dark:text-white focus:outline-none focus:ring-2 focus:ring-blue-500"
-          />
-          <input
-            type="text" // <--- CHANGED FROM "number" TO "text"
-            placeholder="Score for Team B"
-            value={tempScoreB} // Bind value to state
-            onChange={(e) => setTempScoreB(e.target.value)} // Update state on change
-            className="w-full px-3 py-2 border rounded-md dark:bg-gray-700 dark:text-white focus:outline-none focus:ring-2 focus:ring-blue-500"
-          />
-        </div>
-      )
+      // Pass the actual ScoreInputModalContent component as content, with a ref and initial scores
+      // Note: currentFixtureToUpdate is handled by a separate state, but fixture prop is directly from the click handler
+      <ScoreInputModalContent
+        ref={scoreInputRef} // Attach ref here so parent can access its methods
+        fixture={fixtureToUpdate} // Pass the full fixture object
+        initialScoreA={currentScoreA}
+        initialScoreB={currentScoreB}
+      />
     );
-  }, [fixtures, tournamentId, openCustomModal, closeCustomModal, tempScoreA, tempScoreB]);
+  }, [fixtures, tournamentId, openCustomModal, closeCustomModal, updateLeaderboard]); // Added updateLeaderboard to dependencies
 
   // Common Loading/Error/No Access UI
   const renderLoadingOrError = () => (
@@ -725,6 +720,12 @@ export default function TournamentPage() {
   if (loadingTournamentData || authLoading || generalError) {
     return renderLoadingOrError();
   }
+
+  // ADD THIS LINE FOR DEBUGGING
+  // This will log every time TournamentPage renders.
+  // Note: tempScoreA/B are now internal to ScoreInputModalContent, so we're logging currentFixtureToUpdate instead
+  console.log('TournamentPage rendering. currentFixtureToUpdate:', currentFixtureToUpdate?.id, 'isModalOpen:', isModalOpen);
+
 
   return (
     <div className="flex flex-col min-h-screen bg-white dark:bg-gray-900 text-gray-900 dark:text-white">
