@@ -1,11 +1,10 @@
-import React, { useEffect, useState, useMemo, useCallback } from 'react'; // Added useCallback
+import React, { useEffect, useState, useMemo, useCallback } from 'react';
 import { db } from '../firebase';
-import { collection, addDoc, onSnapshot, doc, deleteDoc, updateDoc, query, orderBy, getDoc, getDocs, writeBatch } from 'firebase/firestore';
+import { collection, addDoc, onSnapshot, doc, deleteDoc, updateDoc, query, orderBy, getDoc, getDocs, writeBatch, where } from 'firebase/firestore';
 import { useParams, Link } from 'react-router-dom';
 import { useAuth } from '../hooks/useAuth';
 
 // Custom Modal Component defined directly within this file for its specific use cases.
-// Note: This is *not* the same as the shared Modal component in ../components/Modal.jsx.
 const Modal = ({ isOpen, message, confirmAction, cancelAction, inputRequired, inputLabel, inputValue, setInputValue }) => {
   if (!isOpen) return null;
 
@@ -15,15 +14,12 @@ const Modal = ({ isOpen, message, confirmAction, cancelAction, inputRequired, in
         {message && <p className="text-lg font-semibold mb-4">{message}</p>}
         {inputRequired && (
           <div className="flex flex-col gap-2 mb-4">
-            {/* This is the input field within this specific Modal.
-                Ensuring type="number" as intended for score adjustments. */}
             <input
-              type="number" // Remains type="number" as it's used for stat adjustments
+              type="number"
               placeholder={inputLabel.trim()}
               value={inputValue}
               onChange={(e) => setInputValue(e.target.value)}
               className="w-full px-3 py-2 border rounded-md dark:bg-gray-700 dark:text-white focus:outline-none focus:ring-2 focus:ring-blue-500"
-              // Explicitly ensuring pointer-events and z-index are not an issue
               style={{ pointerEvents: 'auto', zIndex: 'auto' }}
             />
           </div>
@@ -50,20 +46,22 @@ const Modal = ({ isOpen, message, confirmAction, cancelAction, inputRequired, in
 };
 
 export default function PlayerPage() {
-  const { id: tournamentId } = useParams(); // Get tournament ID from URL
-  const { user, loading: authLoading } = useAuth(); // Get the current user from useAuth, and auth loading state
+  const { id: tournamentId } = useParams();
+  const { user, loading: authLoading } = useAuth();
   const [tournamentName, setTournamentName] = useState('Loading...');
-  const [loadingTournamentData, setLoadingTournamentData] = useState(true); // Specific loading for tournament data
+  const [loadingTournamentData, setLoadingTournamentData] = useState(true);
   const [error, setError] = useState(null);
 
   const [players, setPlayers] = useState([]);
-  const [matchStats, setMatchStats] = useState([]); // Still used for aggregation of goals/assists
+  const [matchStats, setMatchStats] = useState([]);
+  const [teams, setTeams] = useState([]);
 
-  const [newPlayerName, setNewPlayerName] = useState(''); // State for new player name
-  const [newPlayerTeam, setNewPlayerTeam] = useState(''); // State for new player team
-  const [addPlayerError, setAddPlayerError] = useState(''); // State for add player errors
+  const [newPlayerName, setNewPlayerName] = useState('');
+  const [newPlayerTeam, setNewPlayerTeam] = useState('');
+  const [customNewTeamName, setCustomNewTeamName] = useState('');
+  const [addPlayerError, setAddPlayerError] = useState('');
 
-  const [showAddPlayerForm, setShowAddPlayerForm] = useState(false); // State to toggle 'Add New Player Details' form visibility
+  const [showAddPlayerForm, setShowAddPlayerForm] = useState(false);
 
   // Custom Modal Component states (for this inline modal)
   const [modalOpen, setModalOpen] = useState(false);
@@ -71,22 +69,20 @@ export default function PlayerPage() {
   const [modalConfirmAction, setModalConfirmAction] = useState(null);
   const [modalInputRequired, setModalInputRequired] = useState(false);
   const [modalInputLabel, setModalInputLabel] = useState('');
-  const [modalInputValue, setModalInputValue] = useState(''); // Value for the generic modal input
+  const [modalInputValue, setModalInputValue] = useState('');
 
-  // Sorting state for the player table
+  // ADDED: Sorting state for the player table
   const [sortConfig, setSortConfig] = useState({ key: 'totalGoals', direction: 'descending' });
 
-  // Memoized openModal function
   const openModal = useCallback((message, confirmAction = null, inputRequired = false, inputLabel = '', initialValue = '') => {
     setModalMessage(message);
-    setModalConfirmAction(() => confirmAction); // Wrap in arrow function to prevent immediate execution
+    setModalConfirmAction(() => confirmAction);
     setModalInputRequired(inputRequired);
     setModalInputLabel(inputLabel);
     setModalInputValue(initialValue);
     setModalOpen(true);
-  }, []); // Empty dependency array means this function is stable
+  }, []);
 
-  // Memoized handleModalConfirm function
   const handleModalConfirm = useCallback(() => {
     if (modalConfirmAction) {
       if (modalInputRequired) {
@@ -97,17 +93,15 @@ export default function PlayerPage() {
     }
     setModalOpen(false);
     setModalInputValue('');
-    setModalConfirmAction(null); // Clear action after execution
-  }, [modalConfirmAction, modalInputRequired, modalInputValue]); // Dependencies for this callback
+    setModalConfirmAction(null);
+  }, [modalConfirmAction, modalInputRequired, modalInputValue]);
 
-  // Memoized handleModalCancel function
   const handleModalCancel = useCallback(() => {
     setModalOpen(false);
     setModalInputValue('');
     setModalConfirmAction(null);
-  }, []); // Empty dependency array means this function is stable
+  }, []);
 
-  // Effect to fetch the specific tournament's name and verify ownership
   useEffect(() => {
     if (authLoading) {
       setLoadingTournamentData(true);
@@ -135,7 +129,7 @@ export default function PlayerPage() {
         const tournamentSnap = await getDoc(tournamentDocRef);
         if (tournamentSnap.exists()) {
           const data = tournamentSnap.data();
-          if (data.userId === user.uid) { // Verify ownership
+          if (data.userId === user.uid) {
             setTournamentName(data.name);
           } else {
             setTournamentName('Access Denied');
@@ -157,35 +151,41 @@ export default function PlayerPage() {
   }, [tournamentId, user, authLoading]);
 
 
-  // Real-time listener for players (scoped to user's tournament)
   useEffect(() => {
-    if (authLoading || !user || !tournamentId || error) return; // Add error check to prevent listener if no access
+    if (authLoading || !user || !tournamentId || error) return;
 
     const playersCollectionRef = collection(db, `tournaments/${tournamentId}/players`);
     const unsubscribePlayers = onSnapshot(playersCollectionRef, (snapshot) => {
-      setPlayers(snapshot.docs.map(doc => ({
+      const fetchedPlayers = snapshot.docs.map(doc => ({
         id: doc.id,
-        // Ensure manOfTheMatchCount exists and defaults to 0
         manOfTheMatchCount: doc.data().manOfTheMatchCount || 0,
         ...doc.data()
-      })));
+      }));
+      setPlayers(fetchedPlayers);
+
+      const uniqueTeams = [...new Set(fetchedPlayers.map(player => player.team))].sort((a, b) => a.localeCompare(b));
+      setTeams(uniqueTeams);
+
+      if (showAddPlayerForm && newPlayerTeam === '' && uniqueTeams.length > 0) {
+        setNewPlayerTeam(uniqueTeams[0]);
+      } else if (showAddPlayerForm && newPlayerTeam === '' && uniqueTeams.length === 0) {
+          setNewPlayerTeam('_new_team_');
+      }
+
     }, (err) => {
       console.error('Error fetching real-time players:', err);
       setError('Failed to load players. Please try again.');
     });
 
     return () => unsubscribePlayers();
-  }, [tournamentId, user, authLoading, error]); // Add error to dependency array
+  }, [tournamentId, user, authLoading, error, showAddPlayerForm]);
 
-  // Real-time listener for match stats (scoped to user's tournament) - essential for goal/assist aggregation
+
   useEffect(() => {
-    if (authLoading || !user || !tournamentId || error) return; // Add error check
+    if (authLoading || !user || !tournamentId || error) return;
 
     const matchStatsCollectionRef = collection(db, `tournaments/${tournamentId}/match_stats`);
-    // orderBy is needed for getDocs for composite indexes. Without a specific field,
-    // Firestore might require an index for a collection group query which is not ideal here.
-    // Given the current logic, fetching all and filtering in client is assumed for smaller datasets.
-    const q = query(matchStatsCollectionRef, orderBy('timestamp', 'desc')); // Order by timestamp for consistent fetching
+    const q = query(matchStatsCollectionRef, orderBy('timestamp', 'desc'));
 
     const unsubscribeStats = onSnapshot(q, (snapshot) => {
       setMatchStats(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() })));
@@ -195,24 +195,41 @@ export default function PlayerPage() {
     });
 
     return () => unsubscribeStats();
-  }, [tournamentId, user, authLoading, error]); // Add error to dependency array
+  }, [tournamentId, user, authLoading, error]);
 
 
   const handleAddPlayer = async () => {
     setAddPlayerError('');
-    if (!newPlayerName.trim() || !newPlayerTeam.trim()) {
-      setAddPlayerError('Player name and team cannot be empty.');
+
+    if (!newPlayerName.trim()) {
+      setAddPlayerError('Player name cannot be empty.');
       return;
     }
+
+    let finalTeamName = '';
+    if (newPlayerTeam === '_new_team_') {
+      if (!customNewTeamName.trim()) {
+        setAddPlayerError('Please enter a name for the new team.');
+        return;
+      }
+      finalTeamName = customNewTeamName.trim();
+    } else if (newPlayerTeam.trim()) {
+      finalTeamName = newPlayerTeam.trim();
+    } else {
+      setAddPlayerError('Please select or enter a team name.');
+      return;
+    }
+
     try {
       await addDoc(collection(db, `tournaments/${tournamentId}/players`), {
-        name: newPlayerName,
-        team: newPlayerTeam,
-        manOfTheMatchCount: 0 // Initialize MOTM count for new players
+        name: newPlayerName.trim(),
+        team: finalTeamName,
+        manOfTheMatchCount: 0
       });
       setNewPlayerName('');
       setNewPlayerTeam('');
-      setShowAddPlayerForm(false); // Hide form after adding
+      setCustomNewTeamName('');
+      setShowAddPlayerForm(false);
     } catch (err) {
       console.error('Error adding player:', err);
       setAddPlayerError('Failed to add player.');
@@ -224,17 +241,10 @@ export default function PlayerPage() {
       try {
         const batch = writeBatch(db);
 
-        // Delete the player document
         const playerDocRef = doc(db, `tournaments/${tournamentId}/players`, playerId);
         batch.delete(playerDocRef);
 
-        // Query and delete associated match stats for this player
-        // NOTE: For very large 'match_stats' collections, fetching all and filtering client-side
-        // for deletion might be inefficient. A Cloud Function triggered by player deletion
-        // that cleans up associated stats would be more scalable.
         const matchStatsCollectionRef = collection(db, `tournaments/${tournamentId}/match_stats`);
-        // Using a query with 'where' directly to filter stats by playerId requires an index.
-        // If this query fails due to missing index, Firebase console will provide a link to create it.
         const statsToDeleteQuery = query(matchStatsCollectionRef, where('playerId', '==', playerId));
         const statsToDeleteSnapshot = await getDocs(statsToDeleteQuery);
 
@@ -254,31 +264,27 @@ export default function PlayerPage() {
   const handleAdjustPlayerStat = async (playerId, statType, changeAmount) => {
     const amount = parseInt(changeAmount, 10);
     if (isNaN(amount)) {
-      openModal('Invalid input. Please enter a valid number.', null); // Clearer error message
+      openModal('Invalid input. Please enter a valid number.', null);
       return;
     }
 
     try {
       if (statType === 'goals' || statType === 'assists') {
-        // Adding an 'increment' field could be more robust for future aggregation
         await addDoc(collection(db, `tournaments/${tournamentId}/match_stats`), {
           playerId: playerId,
-          matchId: 'manual_adjustment', // Special ID for manual entries
+          matchId: 'manual_adjustment',
           goals: statType === 'goals' ? amount : 0,
           assists: statType === 'assists' ? amount : 0,
-          timestamp: new Date(), // Timestamp for the adjustment
-          type: 'manual_adjustment' // Indicate this is a manual adjustment
+          timestamp: new Date(),
+          type: 'manual_adjustment'
         });
       } else if (statType === 'manOfTheMatchCount') {
         const playerRef = doc(db, `tournaments/${tournamentId}/players`, playerId);
-        // Using `updateDoc` with a functional update for `manOfTheMatchCount`
-        // if you want to avoid reading current value, but for simplicity
-        // reading and then updating is fine given the current structure.
         const playerSnap = await getDoc(playerRef);
         if (playerSnap.exists()) {
           const currentCount = playerSnap.data().manOfTheMatchCount || 0;
           await updateDoc(playerRef, {
-            manOfTheMatchCount: Math.max(0, currentCount + amount) // Ensure count doesn't go below 0
+            manOfTheMatchCount: Math.max(0, currentCount + amount)
           });
         }
       }
@@ -322,8 +328,9 @@ export default function PlayerPage() {
       }
       return a.name.localeCompare(b.name); // Tertiary sort by name
     });
-  }, [players, matchStats, sortConfig]);
+  }, [players, matchStats, sortConfig]); // `sortConfig` is now correctly a dependency
 
+  // ADDED: requestSort function
   const requestSort = (key) => {
     let direction = 'descending';
     if (sortConfig.key === key && sortConfig.direction === 'descending') {
@@ -332,6 +339,7 @@ export default function PlayerPage() {
     setSortConfig({ key, direction });
   };
 
+  // ADDED: getSortIcon function
   const getSortIcon = (key) => {
     if (sortConfig.key === key) {
       return sortConfig.direction === 'ascending' ? '▲' : '▼';
@@ -379,14 +387,42 @@ export default function PlayerPage() {
                     value={newPlayerName}
                     onChange={(e) => setNewPlayerName(e.target.value)}
                     className="border px-3 py-2 rounded-md dark:bg-gray-700 dark:text-white flex-grow min-w-[150px] focus:outline-none focus:ring-2 focus:ring-blue-500"
+                    required
                   />
-                  <input
-                    type="text"
-                    placeholder="Team Name"
+
+                  {/* Team Name Dropdown */}
+                  <select
                     value={newPlayerTeam}
-                    onChange={(e) => setNewPlayerTeam(e.target.value)}
+                    onChange={(e) => {
+                      setNewPlayerTeam(e.target.value);
+                      // Clear the custom new team name input if an existing team is selected
+                      if (e.target.value !== '_new_team_') {
+                        setCustomNewTeamName('');
+                      }
+                    }}
                     className="border px-3 py-2 rounded-md dark:bg-gray-700 dark:text-white flex-grow min-w-[150px] focus:outline-none focus:ring-2 focus:ring-blue-500"
-                  />
+                    required
+                  >
+                    <option value="" disabled>Select Team</option>
+                    {/* Option to type a new team */}
+                    <option value="_new_team_">-- Add New Team --</option>
+                    {teams.map(team => (
+                      <option key={team} value={team}>{team}</option>
+                    ))}
+                  </select>
+
+                  {/* Input for new team name, shown conditionally */}
+                  {newPlayerTeam === '_new_team_' && (
+                    <input
+                      type="text"
+                      placeholder="Enter New Team Name"
+                      value={customNewTeamName}
+                      onChange={(e) => setCustomNewTeamName(e.target.value)}
+                      className="border px-3 py-2 rounded-md dark:bg-gray-700 dark:text-white flex-grow min-w-[150px] focus:outline-none focus:ring-2 focus:ring-blue-500"
+                      required
+                    />
+                  )}
+
                   <button
                     onClick={handleAddPlayer}
                     className="bg-green-600 text-white px-4 py-2 rounded-md hover:bg-green-700 transition-colors"
@@ -518,7 +554,7 @@ export default function PlayerPage() {
       <Modal
         isOpen={modalOpen}
         message={modalMessage}
-        confirmAction={modalConfirmAction ? handleModalConfirm : null} // Pass null if no confirm action
+        confirmAction={modalConfirmAction ? handleModalConfirm : null}
         cancelAction={handleModalCancel}
         inputRequired={modalInputRequired}
         inputLabel={modalInputLabel}

@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import { BrowserRouter, Routes, Route, Link } from 'react-router-dom';
+import { BrowserRouter, Routes, Route } from 'react-router-dom'; // Removed Link as it's not used here
 
 // Import Page Components
 import Dashboard from './pages/Dashboard';
@@ -103,7 +103,6 @@ export default function App() {
           setLang={setLang}
           t={t}
           // Pass the logout function from useAuth directly to the Header component.
-          // The Header component's 'setToken' prop is used here to trigger logout.
           setToken={() => logout()}
         />
 
@@ -111,21 +110,21 @@ export default function App() {
         <div className="flex-grow">
           <Routes>
             {/* Root route: Displays the Dashboard page, protected by ProtectedRoute. */}
-            <Route path="/" element={<ProtectedRoute user={user}><Dashboard /></ProtectedRoute>} />
+            <Route path="/" element={<ProtectedRoute><Dashboard /></ProtectedRoute>} />
 
             {/* Tournament-specific pages: These routes use a dynamic :id parameter to fetch tournament data. */}
             {/* Each is protected, ensuring only authenticated users can access them. */}
-            <Route path="/tournament/:id" element={<ProtectedRoute user={user}><TournamentPage /></ProtectedRoute>} />
-            <Route path="/tournament/:id/fixtures" element={<ProtectedRoute user={user}><FixturesPage /></ProtectedRoute>} />
-            <Route path="/tournament/:id/leaderboard" element={<ProtectedRoute user={user}><LeaderboardPage /></ProtectedRoute>} />
-            <Route path="/tournament/:id/knockout" element={<ProtectedRoute user={user}><KnockoutPage /></ProtectedRoute>} />
-            <Route path="/tournament/:id/ai-prediction" element={<ProtectedRoute user={user}><AIPredictionPage /></ProtectedRoute>} />
-            <Route path="/tournament/:id/stats" element={<ProtectedRoute user={user}><StatsPage /></ProtectedRoute>} />
-            <Route path="/tournament/:id/players" element={<ProtectedRoute user={user}><PlayerPage /></ProtectedRoute>} />
+            <Route path="/tournament/:id" element={<ProtectedRoute><TournamentPage /></ProtectedRoute>} />
+            <Route path="/tournament/:id/fixtures" element={<ProtectedRoute><FixturesPage /></ProtectedRoute>} />
+            <Route path="/tournament/:id/leaderboard" element={<ProtectedRoute><LeaderboardPage /></ProtectedRoute>} />
+            <Route path="/tournament/:id/knockout" element={<ProtectedRoute><KnockoutPage /></ProtectedRoute>} />
+            <Route path="/tournament/:id/ai-prediction" element={<ProtectedRoute><AIPredictionPage /></ProtectedRoute>} />
+            <Route path="/tournament/:id/stats" element={<ProtectedRoute><StatsPage /></ProtectedRoute>} />
+            <Route path="/tournament/:id/players" element={<ProtectedRoute><PlayerPage /></ProtectedRoute>} />
 
             {/* Fallback route: If no other route matches, it redirects to the Dashboard. */}
             {/* This is also protected. */}
-            <Route path="*" element={<ProtectedRoute user={user}><Dashboard /></ProtectedRoute>} />
+            <Route path="*" element={<ProtectedRoute><Dashboard /></ProtectedRoute>} />
           </Routes>
         </div>
       </div>
