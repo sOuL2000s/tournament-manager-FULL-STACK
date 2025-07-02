@@ -1,312 +1,378 @@
-// 📁 src/pages/StatsPage.jsx
-import React, { useEffect, useState } from 'react';
+// src/pages/StatsPage.jsx
+
+import React, { useEffect, useState, useMemo, useCallback } from 'react';
+import { useParams, Link, useLocation } from 'react-router-dom';
 import { db } from '../firebase';
-import { collection, onSnapshot, query, orderBy, doc, getDoc } from 'firebase/firestore';
-import { Bar, Pie } from 'react-chartjs-2';
-import { Chart as ChartJS, CategoryScale, LinearScale, BarElement, Title, Tooltip, Legend, ArcElement } from 'chart.js';
-import { useParams, Link } from 'react-router-dom';
+import { collection, query, onSnapshot, doc, getDoc } from 'firebase/firestore';
+import { useAuth } from '../hooks/useAuth';
+import { Bar, Pie, Doughnut } from 'react-chartjs-2';
+import {
+  Chart as ChartJS,
+  CategoryScale,
+  LinearScale,
+  BarElement,
+  Title,
+  Tooltip,
+  Legend,
+  ArcElement,
+} from 'chart.js';
 
 // Register Chart.js components
 ChartJS.register(CategoryScale, LinearScale, BarElement, Title, Tooltip, Legend, ArcElement);
 
-// Dynamic color generation for teams - moved outside for better performance
-// This ensures colors are generated once per unique team set and are visually distinct.
-const generateColors = (count) => {
-  const baseColors = [
-    '#3B82F6', // blue-500
-    '#10B981', // green-500
-    '#F59E0B', // yellow-500
-    '#EF4444', // red-500
-    '#6366F1', // indigo-500
-    '#8B5CF6', // purple-500
-    '#06B6D4', // cyan-500
-    '#EC4899', // pink-500
-    '#A855F7', // fuchsia-500
-    '#14B8A6', // teal-500
-    '#F97316', // orange-500
-    '#6B7280', // gray-500
-  ];
-  // Extend with more vibrant random colors if needed to cover all teams
-  const colors = [...baseColors];
-  while (colors.length < count) {
-    // Generate a random bright color (HSL for better control)
-    const hue = Math.floor(Math.random() * 360);
-    const saturation = Math.floor(Math.random() * (100 - 70) + 70); // 70-100% saturation
-    const lightness = Math.floor(Math.random() * (70 - 40) + 40); // 40-70% lightness
-    colors.push(`hsl(${hue}, ${saturation}%, ${lightness}%)`);
-  }
-  return colors;
-};
-
 export default function StatsPage() {
-  const { id: tournamentId } = useParams(); // Get tournament ID from URL
-  const [tournamentName, setTournamentName] = useState('Loading...'); // State for tournament name
-  const [stats, setStats] = useState([]); // Stores completed fixture data
-  const [loading, setLoading] = useState(true);
+  const { id: tournamentId } = useParams();
+  const { user, loading: authLoading } = useAuth();
+  const [tournamentName, setTournamentName] = useState('Loading...');
+  const [loadingTournamentData, setLoadingTournamentData] = useState(true);
   const [error, setError] = useState(null);
+  const [fixtures, setFixtures] = useState([]);
+  const [players, setPlayers] = useState([]);
+  const [teams, setTeams] = useState([]); // State to hold unique team names
 
-  // Effect to fetch the specific tournament's name
+  const location = useLocation();
+  const queryParams = new URLSearchParams(location.search);
+  const shareId = queryParams.get('shareId');
+
+  // Determine if the page is in read-only mode
+  const isViewOnly = useMemo(() => {
+    if (shareId) return true;
+    return false; // Not read-only if no shareId
+  }, [shareId]);
+
+  const [tournamentOwnerId, setTournamentOwnerId] = useState(null);
+
   useEffect(() => {
-    if (!tournamentId) {
-      setTournamentName('No Tournament ID');
-      setError("Tournament ID is missing.");
+    if (authLoading) {
+      setLoadingTournamentData(true);
       return;
     }
-    const fetchTournamentName = async () => {
+
+    if (!user && !shareId) {
+      setError("You must be logged in to view tournament details.");
+      setLoadingTournamentData(false);
+      return;
+    }
+
+    if (!tournamentId) {
+      setError("No tournament ID provided in the URL.");
+      setLoadingTournamentData(false);
+      return;
+    }
+
+    setLoadingTournamentData(true);
+    setError(null);
+
+    const fetchTournamentData = async () => {
       try {
         const tournamentDocRef = doc(db, 'tournaments', tournamentId);
         const tournamentSnap = await getDoc(tournamentDocRef);
+
         if (tournamentSnap.exists()) {
-          setTournamentName(tournamentSnap.data().name);
+          const data = tournamentSnap.data();
+          setTournamentName(data.name);
+          setTournamentOwnerId(data.userId);
+
+          // If shareId is present, allow access
+          if (shareId && data.shareId === shareId) {
+            // Public view, no further permission check needed
+          } else if (user && data.userId === user.uid) {
+            // Owner access
+          } else {
+            // Neither shareId matches, nor is the user the owner
+            setTournamentName('Access Denied');
+            setError('You do not have permission to access this tournament.');
+          }
         } else {
           setTournamentName('Tournament Not Found');
           setError('The requested tournament does not exist.');
         }
+        setLoadingTournamentData(false);
       } catch (err) {
-        console.error('Error fetching tournament name:', err);
-        setTournamentName('Error loading name');
-        setError('Failed to load tournament name.');
+        console.error('Error fetching tournament data:', err);
+        setTournamentName('Error');
+        setError('Failed to load tournament details.');
+        setLoadingTournamentData(false);
       }
     };
-    fetchTournamentName();
-  }, [tournamentId]);
+    fetchTournamentData();
+  }, [tournamentId, user, authLoading, shareId]);
+
 
   useEffect(() => {
-    if (!tournamentId) {
-      setLoading(false); // Stop loading if no tournament ID
-      return;
-    }
+    if (loadingTournamentData || error || (!user && !shareId)) return;
 
-    setLoading(true);
-    setError(null);
+    const fixturesCollectionRef = collection(db, `tournaments/${tournamentId}/fixtures`);
+    const unsubscribeFixtures = onSnapshot(fixturesCollectionRef, (snapshot) => {
+      const fetchedFixtures = snapshot.docs.map(doc => ({
+        id: doc.id,
+        ...doc.data()
+      }));
+      setFixtures(fetchedFixtures);
+    }, (err) => {
+      console.error('Error fetching real-time fixtures:', err);
+      setError('Failed to load fixtures. Please try again.');
+    });
 
-    try {
-      const fixturesCollectionRef = collection(db, `tournaments/${tournamentId}/fixtures`);
-      // Ordering by timestamp is good for consistency, ensures index usage if applicable
-      const q = query(fixturesCollectionRef, orderBy('timestamp', 'asc'));
+    const playersCollectionRef = collection(db, `tournaments/${tournamentId}/players`);
+    const unsubscribePlayers = onSnapshot(playersCollectionRef, (snapshot) => {
+      const fetchedPlayers = snapshot.docs.map(doc => ({
+        id: doc.id,
+        ...doc.data()
+      }));
+      setPlayers(fetchedPlayers);
+      const uniqueTeams = [...new Set(fetchedPlayers.map(player => player.team))];
+      setTeams(uniqueTeams);
+    }, (err) => {
+      console.error('Error fetching real-time players:', err);
+      setError('Failed to load players. Please try again.');
+    });
 
-      const unsubscribe = onSnapshot(q, (snapshot) => {
-        const matchData = snapshot.docs.map(doc => ({
-          id: doc.id,
-          ...doc.data(),
-          // Ensure scores are numbers, default to 0 if undefined, null, or non-numeric
-          scoreA: Number(doc.data().scoreA) || 0,
-          scoreB: Number(doc.data().scoreB) || 0,
-        }));
-        // Filter for only completed matches for statistics
-        setStats(matchData.filter(match => match.status === 'completed'));
-        setLoading(false);
-      }, (err) => {
-        console.error('Error fetching real-time match stats:', err);
-        setError('Failed to load match statistics. Please try again.');
-        setLoading(false);
-      });
+    return () => {
+      unsubscribeFixtures();
+      unsubscribePlayers();
+    };
+  }, [tournamentId, loadingTournamentData, error, user, shareId]);
 
-      return () => unsubscribe(); // Clean up the listener
-    } catch (err) {
-      console.error("Error setting up stats listener:", err);
-      setError("Failed to set up stats listener.");
-      setLoading(false);
-    }
-  }, [tournamentId]);
 
-  // Handle loading and error states for the main content
-  if (loading) {
-    return (
-      <div className="flex flex-col min-h-screen bg-white dark:bg-gray-900 text-gray-900 dark:text-white">
-        {/* Top Navigation Bar */}
-        <div className="bg-red-600 text-white p-4 flex justify-around font-bold text-lg">
-          <Link to={`/tournament/${tournamentId}`} className="flex-1 text-center py-2 px-1 hover:bg-red-700 transition-colors">LEAGUE</Link>
-          <Link to={`/tournament/${tournamentId}/fixtures`} className="flex-1 text-center py-2 px-1 hover:bg-red-700 transition-colors">FIXTURES</Link>
-          <Link to={`/tournament/${tournamentId}/players`} className="flex-1 text-center py-2 px-1 hover:bg-red-700 transition-colors">TOP SCORERS</Link>
-          <Link to={`/tournament/${tournamentId}/stats`} className="flex-1 text-center py-2 px-1 hover:bg-red-700 transition-colors">STATS</Link>
-          <Link to={`/tournament/${tournamentId}/knockout`} className="flex-1 text-center py-2 px-1 hover:bg-red-700 transition-colors">KNOCKOUT</Link>
-          <Link to={`/tournament/${tournamentId}/ai-prediction`} className="flex-1 text-center py-2 px-1 hover:bg-red-700 transition-colors">AI PREDICTION</Link>
-        </div>
-        <div className="p-6 max-w-4xl mx-auto w-full">
-          <h2 className="text-2xl font-bold mb-4 text-center">📊 Tournament Statistics ({tournamentName})</h2>
-          <p className="text-center text-gray-500 py-8">Loading match stats...</p>
-        </div>
-      </div>
-    );
-  }
+  // Derived state for stats
+  const {
+    totalMatches,
+    completedMatches,
+    pendingMatches,
+    goalsPerMatch,
+    winsByTeam,
+    teamGoals,
+    matchOutcomes,
+    playerGoals,
+    manOfTheMatchCounts
+  } = useMemo(() => {
+    let total = 0;
+    let completed = 0;
+    let teamWins = {};
+    let teamGoalsFor = {};
+    let outcomes = { 'Win': 0, 'Draw': 0, 'Loss': 0 }; // Relative to team A in a fixture
+    let pGoals = {};
+    let motmCounts = {};
 
-  if (error) {
-    return (
-      <div className="flex flex-col min-h-screen bg-white dark:bg-gray-900 text-gray-900 dark:text-white">
-        {/* Top Navigation Bar */}
-        <div className="bg-red-600 text-white p-4 flex justify-around font-bold text-lg">
-          <Link to={`/tournament/${tournamentId}`} className="flex-1 text-center py-2 px-1 hover:bg-red-700 transition-colors">LEAGUE</Link>
-          <Link to={`/tournament/${tournamentId}/fixtures`} className="flex-1 text-center py-2 px-1 hover:bg-red-700 transition-colors">FIXTURES</Link>
-          <Link to={`/tournament/${tournamentId}/players`} className="flex-1 text-center py-2 px-1 hover:bg-red-700 transition-colors">TOP SCORERS</Link>
-          <Link to={`/tournament/${tournamentId}/stats`} className="flex-1 text-center py-2 px-1 hover:bg-red-700 transition-colors">STATS</Link>
-          <Link to={`/tournament/${tournamentId}/knockout`} className="flex-1 text-center py-2 px-1 hover:bg-red-700 transition-colors">KNOCKOUT</Link>
-          <Link to={`/tournament/${tournamentId}/ai-prediction`} className="flex-1 text-center py-2 px-1 hover:bg-red-700 transition-colors">AI PREDICTION</Link>
-        </div>
-        <div className="p-6 max-w-4xl mx-auto w-full">
-          <h2 className="text-2xl font-bold mb-4 text-center">📊 Tournament Statistics ({tournamentName})</h2>
-          <p className="text-center text-red-500 py-8">Error: {error}</p>
-        </div>
-      </div>
-    );
-  }
+    fixtures.forEach(fixture => {
+      total++;
+      if (fixture.status === 'completed') {
+        completed++;
 
-  // If no completed matches, display a message
-  if (stats.length === 0) {
-    return (
-      <div className="flex flex-col min-h-screen bg-white dark:bg-gray-900 text-gray-900 dark:text-white">
-        {/* Top Navigation Bar */}
-        <div className="bg-red-600 text-white p-4 flex justify-around font-bold text-lg">
-          <Link to={`/tournament/${tournamentId}`} className="flex-1 text-center py-2 px-1 hover:bg-red-700 transition-colors">LEAGUE</Link>
-          <Link to={`/tournament/${tournamentId}/fixtures`} className="flex-1 text-center py-2 px-1 hover:bg-red-700 transition-colors">FIXTURES</Link>
-          <Link to={`/tournament/${tournamentId}/players`} className="flex-1 text-center py-2 px-1 hover:bg-red-700 transition-colors">TOP SCORERS</Link>
-          <Link to={`/tournament/${tournamentId}/stats`} className="flex-1 text-center py-2 px-1 hover:bg-red-700 transition-colors">STATS</Link>
-          <Link to={`/tournament/${tournamentId}/knockout`} className="flex-1 text-center py-2 px-1 hover:bg-red-700 transition-colors">KNOCKOUT</Link>
-          <Link to={`/tournament/${tournamentId}/ai-prediction`} className="flex-1 text-center py-2 px-1 hover:bg-red-700 transition-colors">AI PREDICTION</Link>
-        </div>
-        <div className="p-6 max-w-4xl mx-auto w-full">
-          <h2 className="text-2xl font-bold mb-4 text-center">📊 Tournament Statistics ({tournamentName})</h2>
-          <p className="text-center text-gray-500 py-8">No completed matches available for statistics in this tournament yet. Play some matches!</p>
-        </div>
-      </div>
-    );
-  }
+        const scoreA = fixture.scoreA || 0;
+        const scoreB = fixture.scoreB || 0;
 
-  // Calculate team goals from completed matches
-  const teamGoals = stats.reduce((acc, match) => {
-    // Ensure that match.scoreA and match.scoreB are treated as numbers
-    acc[match.teamA] = (acc[match.teamA] || 0) + (Number(match.scoreA) || 0);
-    acc[match.teamB] = (acc[match.teamB] || 0) + (Number(match.scoreB) || 0);
-    return acc;
-  }, {});
+        // Wins by Team
+        if (scoreA > scoreB) {
+          teamWins[fixture.teamA] = (teamWins[fixture.teamA] || 0) + 1;
+          outcomes['Win']++;
+        } else if (scoreB > scoreA) {
+          teamWins[fixture.teamB] = (teamWins[fixture.teamB] || 0) + 1;
+          outcomes['Loss']++;
+        } else {
+          outcomes['Draw']++;
+        }
 
-  // Calculate total goals and average goals per completed match
-  const totalGoals = Object.values(teamGoals).reduce((a, b) => a + b, 0);
-  const avgGoals = stats.length > 0 ? (totalGoals / stats.length).toFixed(2) : 0;
+        // Team Goals
+        teamGoalsFor[fixture.teamA] = (teamGoalsFor[fixture.teamA] || 0) + scoreA;
+        teamGoalsFor[fixture.teamB] = (teamGoalsFor[fixture.teamB] || 0) + scoreB;
 
-  // Get the dynamic colors based on the number of unique teams
-  const teamNames = Object.keys(teamGoals);
-  const dynamicColors = generateColors(teamNames.length);
-
-  const barData = {
-    labels: teamNames,
-    datasets: [
-      {
-        label: 'Goals Scored',
-        data: Object.values(teamGoals),
-        backgroundColor: dynamicColors,
-        borderColor: dynamicColors.map(color => color.replace(')', ', 0.8)')), // Slightly darker border for contrast
-        borderWidth: 1,
-      },
-    ],
-  };
-
-  const pieData = {
-    labels: teamNames,
-    datasets: [
-      {
-        label: 'Goals Distribution',
-        data: Object.values(teamGoals),
-        backgroundColor: dynamicColors,
-        borderColor: '#fff', // White border for pie segments
-        borderWidth: 2,
-      },
-    ],
-  };
-
-  const chartOptions = {
-    responsive: true,
-    maintainAspectRatio: false, // Allow charts to adapt to container size
-    plugins: {
-      legend: {
-        position: 'top',
-        labels: {
-          color: 'var(--text-color)', // Use CSS variable for text color
-        },
-      },
-      title: {
-        display: false, // Title is handled by H3 tag in JSX
-      },
-      tooltip: {
-        callbacks: {
-          label: function(context) {
-            let label = context.label || '';
-            if (label) {
-              label += ': ';
-            }
-            if (context.parsed !== null) {
-              label += context.raw; // For pie and bar, raw gives the direct value
-            }
-            return label;
+        // Player Goals (assuming goals structure is {playerId: count})
+        if (fixture.goals) {
+          for (const playerId in fixture.goals) {
+            pGoals[players.find(p => p.id === playerId)?.name || playerId] = (pGoals[players.find(p => p.id === playerId)?.name || playerId] || 0) + fixture.goals[playerId];
           }
         }
-      }
-    },
-    scales: {
-      x: {
-        ticks: {
-          color: 'var(--text-color)', // Use CSS variable for tick labels
-        },
-        grid: {
-          color: 'rgba(128, 128, 128, 0.2)', // Lighter grid lines
-        }
-      },
-      y: {
-        ticks: {
-          color: 'var(--text-color)',
-        },
-        grid: {
-          color: 'rgba(128, 128, 128, 0.2)',
+
+        // Man of the Match
+        if (fixture.manOfTheMatch) {
+          motmCounts[players.find(p => p.id === fixture.manOfTheMatch)?.name || fixture.manOfTheMatch] = (motmCounts[players.find(p => p.id === fixture.manOfTheMatch)?.name || fixture.manOfTheMatch] || 0) + 1;
         }
       }
-    }
+    });
+
+    const pending = total - completed;
+    const totalGoals = Object.values(teamGoalsFor).reduce((sum, current) => sum + current, 0);
+    const avgGoalsPerMatch = completed > 0 ? (totalGoals / (completed * 2)) : 0; // Each fixture has 2 teams scoring
+
+    return {
+      totalMatches: total,
+      completedMatches: completed,
+      pendingMatches: pending,
+      goalsPerMatch: avgGoalsPerMatch.toFixed(2),
+      winsByTeam: teamWins,
+      teamGoals: teamGoalsFor,
+      matchOutcomes: outcomes,
+      playerGoals: pGoals,
+      manOfTheMatchCounts: motmCounts
+    };
+  }, [fixtures, players]); // Re-calculate if fixtures or players change
+
+  // Chart data configurations
+  const goalsPerTeamChartData = {
+    labels: Object.keys(teamGoals),
+    datasets: [{
+      label: 'Goals Scored',
+      data: Object.values(teamGoals),
+      backgroundColor: 'rgba(75, 192, 192, 0.6)',
+      borderColor: 'rgba(75, 192, 192, 1)',
+      borderWidth: 1,
+    }]
   };
 
+  const matchOutcomesChartData = {
+    labels: Object.keys(matchOutcomes),
+    datasets: [{
+      label: 'Match Outcomes',
+      data: Object.values(matchOutcomes),
+      backgroundColor: [
+        'rgba(54, 162, 235, 0.6)', // Win
+        'rgba(255, 206, 86, 0.6)', // Draw
+        'rgba(255, 99, 132, 0.6)', // Loss
+      ],
+      borderColor: [
+        'rgba(54, 162, 235, 1)',
+        'rgba(255, 206, 86, 1)',
+        'rgba(255, 99, 132, 1)',
+      ],
+      borderWidth: 1,
+    }]
+  };
+
+  const topScorersChartData = {
+    labels: Object.keys(playerGoals).sort((a, b) => playerGoals[b] - playerGoals[a]).slice(0, 5), // Top 5
+    datasets: [{
+      label: 'Goals',
+      data: Object.values(playerGoals).sort((a, b) => b - a).slice(0, 5),
+      backgroundColor: 'rgba(153, 102, 255, 0.6)',
+      borderColor: 'rgba(153, 102, 255, 1)',
+      borderWidth: 1,
+    }]
+  };
+
+  const manOfTheMatchChartData = {
+    labels: Object.keys(manOfTheMatchCounts).sort((a, b) => manOfTheMatchCounts[b] - manOfTheMatchCounts[a]).slice(0, 5), // Top 5
+    datasets: [{
+      label: 'Man of the Match Awards',
+      data: Object.values(manOfTheMatchCounts).sort((a, b) => b - a).slice(0, 5),
+      backgroundColor: 'rgba(255, 159, 64, 0.6)',
+      borderColor: 'rgba(255, 159, 64, 1)',
+      borderWidth: 1,
+    }]
+  };
+
+  // Common Loading/Error/No Access UI
+  const renderLoadingOrError = () => (
+    <div className="flex flex-col min-h-screen bg-white dark:bg-gray-900 text-gray-900 dark:text-white">
+      {/* Top Navigation Bar - Always render for consistent layout */}
+      <div className="bg-red-600 text-white p-4 flex justify-around font-bold text-lg">
+        <Link to={`/tournament/${tournamentId}/leaderboard${shareId ? `?shareId=${shareId}` : ''}`} className="flex-1 text-center py-2 px-1 hover:bg-red-700 transition-colors">LEAGUE</Link>
+        <Link to={`/tournament/${tournamentId}/fixtures${shareId ? `?shareId=${shareId}` : ''}`} className="flex-1 text-center py-2 px-1 hover:bg-red-700 transition-colors">FIXTURES</Link>
+        <Link to={`/tournament/${tournamentId}/players${shareId ? `?shareId=${shareId}` : ''}`} className="flex-1 text-center py-2 px-1 hover:bg-red-700 transition-colors">TOP SCORERS</Link>
+        <Link to={`/tournament/${tournamentId}/stats${shareId ? `?shareId=${shareId}` : ''}`} className="flex-1 text-center py-2 px-1 hover:bg-red-700 transition-colors">STATS</Link>
+        <Link to={`/tournament/${tournamentId}/knockout${shareId ? `?shareId=${shareId}` : ''}`} className="flex-1 text-center py-2 px-1 hover:bg-red-700 transition-colors">KNOCKOUT</Link>
+        <Link to={`/tournament/${tournamentId}/ai-prediction${shareId ? `?shareId=${shareId}` : ''}`} className="flex-1 text-center py-2 px-1 hover:bg-red-700 transition-colors">AI PREDICTION</Link>
+      </div>
+      <div className="flex-grow flex items-center justify-center p-4">
+        {loadingTournamentData ? (
+          <p className="text-lg font-semibold animate-pulse">Loading tournament data...</p>
+        ) : error ? (
+          <p className="text-red-500 text-lg font-semibold">{error}</p>
+        ) : (
+          <p className="text-gray-500 text-lg font-semibold">No data available or access denied.</p>
+        )}
+      </div>
+    </div>
+  );
+
+  if (loadingTournamentData || error || (!user && !shareId)) {
+    return renderLoadingOrError();
+  }
+
+  // Check if there are any completed fixtures to display stats for
+  const hasCompletedFixtures = fixtures.some(f => f.status === 'completed');
 
   return (
-    <div className="flex flex-col min-h-screen bg-white dark:bg-gray-900 text-gray-900 dark:text-white">
+    <div className="flex flex-col min-h-screen bg-gray-100 text-gray-900 dark:bg-gray-900 dark:text-white">
       {/* Top Navigation Bar */}
-      <div className="bg-red-600 text-white p-4 flex justify-around font-bold text-lg">
-        <Link to={`/tournament/${tournamentId}`} className="flex-1 text-center py-2 px-1 hover:bg-red-700 transition-colors">LEAGUE</Link>
-        <Link to={`/tournament/${tournamentId}/fixtures`} className="flex-1 text-center py-2 px-1 hover:bg-red-700 transition-colors">FIXTURES</Link>
-        <Link to={`/tournament/${tournamentId}/players`} className="flex-1 text-center py-2 px-1 hover:bg-red-700 transition-colors">TOP SCORERS</Link>
-        <Link to={`/tournament/${tournamentId}/stats`} className="flex-1 text-center py-2 px-1 hover:bg-red-700 transition-colors">STATS</Link>
-        <Link to={`/tournament/${tournamentId}/knockout`} className="flex-1 text-center py-2 px-1 hover:bg-red-700 transition-colors">KNOCKOUT</Link>
-        <Link to={`/tournament/${tournamentId}/ai-prediction`} className="flex-1 text-center py-2 px-1 hover:bg-red-700 transition-colors">AI PREDICTION</Link>
+      <div className="bg-red-600 text-white p-4 flex flex-wrap justify-around font-bold text-lg">
+        <Link to={`/tournament/${tournamentId}/leaderboard${shareId ? `?shareId=${shareId}` : ''}`} className="flex-1 text-center py-2 px-1 hover:bg-red-700 transition-colors whitespace-nowrap min-w-max">LEAGUE</Link>
+        <Link to={`/tournament/${tournamentId}/fixtures${shareId ? `?shareId=${shareId}` : ''}`} className="flex-1 text-center py-2 px-1 hover:bg-red-700 transition-colors whitespace-nowrap min-w-max">FIXTURES</Link>
+        <Link to={`/tournament/${tournamentId}/players${shareId ? `?shareId=${shareId}` : ''}`} className="flex-1 text-center py-2 px-1 hover:bg-red-700 transition-colors whitespace-nowrap min-w-max">PLAYERS</Link> {/* Changed from TOP SCORERS to PLAYERS */}
+        <Link to={`/tournament/${tournamentId}/stats${shareId ? `?shareId=${shareId}` : ''}`} className="flex-1 text-center py-2 px-1 hover:bg-red-700 transition-colors whitespace-nowrap min-w-max">STATS</Link>
+        <Link to={`/tournament/${tournamentId}/knockout${shareId ? `?shareId=${shareId}` : ''}`} className="flex-1 text-center py-2 px-1 hover:bg-red-700 transition-colors whitespace-nowrap min-w-max">KNOCKOUT</Link>
+        <Link to={`/tournament/${tournamentId}/ai-prediction${shareId ? `?shareId=${shareId}` : ''}`} className="flex-1 text-center py-2 px-1 hover:bg-red-700 transition-colors whitespace-nowrap min-w-max">AI PREDICTION</Link>
       </div>
 
-      <div className="p-6 max-w-4xl mx-auto w-full">
-        {/* CSS Variable Definition (consider moving to global CSS for better maintainability) */}
-        <style>{`
-          /* Define CSS variable for text color based on dark mode */
-          html.dark {
-            --text-color: #f3f4f6; /* light gray for dark mode */
-          }
-          html:not(.dark) {
-            --text-color: #1f2937; /* dark gray for light mode */
-          }
-        `}</style>
-        <h2 className="text-2xl font-bold mb-4 text-center">📊 Tournament Statistics ({tournamentName})</h2>
+      <div className="flex-grow p-4 md:p-6 lg:p-8 max-w-7xl mx-auto w-full">
+        <h2 className="text-2xl md:text-3xl font-bold mb-6 text-center">📊 Tournament Stats ({tournamentName})</h2>
 
-        {/* Average Goals per Match Stat Card */}
-        <div className="bg-white dark:bg-gray-800 p-4 rounded-lg shadow-md text-center mb-6 border border-gray-200 dark:border-gray-700">
-          <h4 className="text-xl font-semibold mb-2 text-gray-700 dark:text-gray-300">⚽ Avg. Goals per Match</h4>
-          <p className="text-4xl mt-1 font-extrabold text-blue-600 dark:text-blue-400">{avgGoals}</p>
-        </div>
+        {!hasCompletedFixtures ? (
+          <p className="text-gray-500 text-center text-lg mt-8">No matches have been completed yet for this tournament. Complete some fixtures to see statistics!</p>
+        ) : (
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+            {/* General Stats Card */}
+            <div className="bg-white dark:bg-gray-800 p-6 rounded-lg shadow-md flex flex-col items-center justify-center">
+              <h3 className="text-xl font-semibold mb-3">Overview</h3>
+              <p className="text-lg">Total Matches: <span className="font-bold">{totalMatches}</span></p>
+              <p className="text-lg">Completed Matches: <span className="font-bold text-green-600 dark:text-green-400">{completedMatches}</span></p>
+              <p className="text-lg">Pending Matches: <span className="font-bold text-yellow-600 dark:text-yellow-400">{pendingMatches}</span></p>
+              <p className="text-lg">Avg. Goals per Match: <span className="font-bold">{goalsPerMatch}</span></p>
+            </div>
 
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
-          {/* Goals by Team Bar Chart */}
-          <div className="bg-white dark:bg-gray-800 p-4 rounded-lg shadow-md border border-gray-200 dark:border-gray-700 h-[400px]">
-            <h3 className="text-lg font-semibold mb-3 text-gray-700 dark:text-gray-300">Goals by Team</h3>
-            <Bar data={barData} options={chartOptions} />
+            {/* Goals Per Team Chart */}
+            {Object.keys(teamGoals).length > 0 && (
+              <div className="bg-white dark:bg-gray-800 p-6 rounded-lg shadow-md">
+                <h3 className="text-xl font-semibold mb-4 text-center">Goals Scored Per Team</h3>
+                <Bar data={goalsPerTeamChartData} options={{ responsive: true, maintainAspectRatio: true }} />
+              </div>
+            )}
+
+            {/* Match Outcomes Chart */}
+            {Object.values(matchOutcomes).some(count => count > 0) && (
+              <div className="bg-white dark:bg-gray-800 p-6 rounded-lg shadow-md flex flex-col items-center justify-center">
+                <h3 className="text-xl font-semibold mb-4 text-center">Match Outcomes</h3>
+                <div className="relative w-full max-w-xs aspect-square">
+                  <Pie data={matchOutcomesChartData} options={{ responsive: true, maintainAspectRatio: false }} />
+                </div>
+              </div>
+            )}
+
+            {/* Top 5 Scorers Chart */}
+            {Object.keys(playerGoals).length > 0 && (
+              <div className="bg-white dark:bg-gray-800 p-6 rounded-lg shadow-md">
+                <h3 className="text-xl font-semibold mb-4 text-center">Top 5 Scorers</h3>
+                <Bar data={topScorersChartData} options={{ indexAxis: 'y', responsive: true, maintainAspectRatio: true }} />
+              </div>
+            )}
+
+            {/* Top 5 Man of the Match Awards Chart */}
+            {Object.keys(manOfTheMatchCounts).length > 0 && (
+              <div className="bg-white dark:bg-gray-800 p-6 rounded-lg shadow-md">
+                <h3 className="text-xl font-semibold mb-4 text-center">Top Man of the Match Awards</h3>
+                <Doughnut data={manOfTheMatchChartData} options={{ responsive: true, maintainAspectRatio: true }} />
+              </div>
+            )}
+
+            {/* Wins By Team List (if more than charts needed) */}
+            {Object.keys(winsByTeam).length > 0 && (
+              <div className="bg-white dark:bg-gray-800 p-6 rounded-lg shadow-md col-span-1 md:col-span-2 lg:col-span-1">
+                <h3 className="text-xl font-semibold mb-4 text-center">Wins by Team</h3>
+                <ul className="space-y-2">
+                  {Object.entries(winsByTeam)
+                    .sort(([, winsA], [, winsB]) => winsB - winsA)
+                    .map(([teamName, wins]) => (
+                      <li key={teamName} className="flex justify-between items-center bg-gray-50 dark:bg-gray-700 p-3 rounded-md">
+                        <span className="font-medium">{teamName}</span>
+                        <span className="font-bold text-blue-600 dark:text-blue-400">{wins} Wins</span>
+                      </li>
+                    ))}
+                </ul>
+              </div>
+            )}
           </div>
-
-          {/* Goals Distribution Pie Chart */}
-          <div className="bg-white dark:bg-gray-800 p-4 rounded-lg shadow-md border border-gray-200 dark:border-gray-700 h-[400px]">
-            <h3 className="text-lg font-semibold mb-3 text-gray-700 dark:text-gray-300">Goals Distribution</h3>
-            <Pie data={pieData} options={chartOptions} />
-          </div>
-        </div>
+        )}
       </div>
     </div>
   );

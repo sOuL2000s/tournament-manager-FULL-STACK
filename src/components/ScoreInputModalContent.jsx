@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useImperativeHandle, forwardRef } from 'react'; // Ensure all these are imported
+import React, { useState, useEffect, useImperativeHandle, forwardRef } from 'react';
 
 // Wrap the component with forwardRef
 // The 'ref' parameter here is CRUCIAL for the parent component's ref to work
@@ -24,38 +24,65 @@ const ScoreInputModalContent = forwardRef(function ScoreInputModalContent(
   // Handle changes in input fields
   const handleScoreAChange = (e) => {
     const value = e.target.value;
-    setLocalTempScoreA(value);
+    // Allow only digits
+    if (/^\d*$/.test(value)) {
+      setLocalTempScoreA(value);
+    }
   };
 
   const handleScoreBChange = (e) => {
     const value = e.target.value;
-    setLocalTempScoreB(value);
+    // Allow only digits
+    if (/^\d*$/.test(value)) {
+      setLocalTempScoreB(value);
+    }
   };
 
-  // This console.log is for debugging: it should print as you type.
-  // If it does, then the component is rendering and its local state is updating.
-  console.log('ScoreInputModalContent rendering. Local ScoreA:', localTempScoreA, 'Local ScoreB:', localTempScoreB);
-
   return (
-    <div className="flex flex-col gap-3 mb-4">
-      <input
-        type="text" // Using "text" to allow custom parsing and validation
-        placeholder={`Score for ${fixture.teamA}`}
-        value={localTempScoreA} // Bind value to local state
-        onChange={handleScoreAChange} // Use local handler
-        className="w-full px-3 py-2 border rounded-md dark:bg-gray-700 dark:text-white focus:outline-none focus:ring-2 focus:ring-blue-500"
-        aria-label={`Score for ${fixture.teamA}`} // Accessibility
-      />
-      <input
-        type="text" // Using "text" to allow custom parsing and validation
-        placeholder={`Score for ${fixture.teamB}`}
-        value={localTempScoreB} // Bind value to local state
-        onChange={handleScoreBChange} // Use local handler
-        className="w-full px-3 py-2 border rounded-md dark:bg-gray-700 dark:text-white focus:outline-none focus:ring-2 focus:ring-blue-500"
-        aria-label={`Score for ${fixture.teamB}`} // Accessibility
-      />
+    // Added responsive padding: p-4 for small screens, md:p-6 for medium and larger
+    <div className="p-4 md:p-6">
+      {/* Changed to flex-col on small screens, sm:flex-row for horizontal on small-medium and up */}
+      {/* Increased gap for better spacing, adjusted mb-6 to mb-8 */}
+      <div className="flex flex-col sm:flex-row justify-around items-center gap-6 sm:gap-4 mb-8">
+        <div className="text-center w-full sm:w-auto"> {/* Make div take full width on small screens */}
+          <label htmlFor="scoreA" className="block text-sm sm:text-base font-medium text-gray-700 dark:text-gray-300 mb-2">
+            {fixture.teamA} Score
+          </label>
+          <input
+            id="scoreA"
+            type="number"
+            value={localTempScoreA}
+            onChange={handleScoreAChange}
+            // Adjusted width to w-full on small screens, w-28 on sm and up
+            className="w-full sm:w-28 px-3 py-2 border border-gray-300 rounded-md text-center text-xl sm:text-lg font-semibold
+                       dark:bg-gray-700 dark:border-gray-600 dark:text-white focus:outline-none focus:ring-2 focus:ring-blue-500"
+            inputMode="numeric"
+            pattern="[0-9]*"
+          />
+        </div>
+
+        {/* Adjusted font size for separator */}
+        <span className="text-3xl sm:text-2xl font-bold text-gray-900 dark:text-white my-4 sm:my-0">-</span>
+
+        <div className="text-center w-full sm:w-auto"> {/* Make div take full width on small screens */}
+          <label htmlFor="scoreB" className="block text-sm sm:text-base font-medium text-gray-700 dark:text-gray-300 mb-2">
+            {fixture.teamB} Score
+          </label>
+          <input
+            id="scoreB"
+            type="number"
+            value={localTempScoreB}
+            onChange={handleScoreBChange}
+            // Adjusted width to w-full on small screens, w-28 on sm and up
+            className="w-full sm:w-28 px-3 py-2 border border-gray-300 rounded-md text-center text-xl sm:text-lg font-semibold
+                       dark:bg-gray-700 dark:border-gray-600 dark:text-white focus:outline-none focus:ring-2 focus:ring-blue-500"
+            inputMode="numeric"
+            pattern="[0-9]*"
+          />
+        </div>
+      </div>
     </div>
   );
 });
 
-export default ScoreInputModalContent; // Ensure the forwardRef-wrapped component is exported
+export default ScoreInputModalContent;
