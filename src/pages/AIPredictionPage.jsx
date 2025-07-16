@@ -1,4 +1,3 @@
-// 📁 src/pages/AIPredictionPage.jsx
 import React, { useEffect, useState } from 'react';
 import { db } from '../firebase';
 import { collection, getDocs, doc, getDoc } from 'firebase/firestore';
@@ -11,10 +10,11 @@ export default function AIPredictionPage() {
   const [result, setResult] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
-  const [isPredicting, setIsPredicting] = useState(false); // State for prediction loading
+  const [isPredicting, setIsPredicting] = useState(false);
+  const [tournamentName, setTournamentName] = useState('');
 
   useEffect(() => {
-    const fetchFixtures = async () => {
+    const fetchTournamentAndFixtures = async () => {
       setLoading(true);
       setError(null);
       try {
@@ -23,18 +23,33 @@ export default function AIPredictionPage() {
           setLoading(false);
           return;
         }
+
+        // Fetch tournament name
+        const tournamentDocRef = doc(db, 'tournaments', tournamentId);
+        const tournamentDocSnap = await getDoc(tournamentDocRef);
+        if (tournamentDocSnap.exists()) {
+          setTournamentName(tournamentDocSnap.data().name);
+        } else {
+          setError("Tournament not found.");
+          setLoading(false);
+          return;
+        }
+
+        // Fetch fixtures
         const fixturesCollectionRef = collection(db, `tournaments/${tournamentId}/fixtures`);
         const snapshot = await getDocs(fixturesCollectionRef);
-        const data = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+        const data = snapshot.docs
+          .map(doc => ({ id: doc.id, ...doc.data() }))
+          .filter(fixture => fixture.status !== 'completed'); // Only show uncompleted matches
         setFixtures(data);
       } catch (err) {
-        console.error('Error fetching fixtures:', err);
-        setError('Failed to load fixtures. Please try again.');
+        console.error('Error fetching data:', err);
+        setError('Failed to load data. Please try again.');
       } finally {
         setLoading(false);
       }
     };
-    fetchFixtures();
+    fetchTournamentAndFixtures();
   }, [tournamentId]);
 
   const handlePredict = async () => {
@@ -42,7 +57,6 @@ export default function AIPredictionPage() {
       setResult('Please select a match before predicting.');
       return;
     }
-
     setIsPredicting(true);
     setResult(null); // Clear previous results
 
@@ -51,126 +65,123 @@ export default function AIPredictionPage() {
       // NEVER expose your API_KEY directly in client-side code in a production application.
       // This is for demonstration purposes only.
       // In a real application, you should proxy this request through a secure backend server
-      // (e.g., Firebase Cloud Functions, a Node.js/Express server, etc.)
-      // where your API_KEY can be securely stored and used server-side.
-      //
-      // For Canvas environment, __api_key is automatically provided if you use gemini-2.0-flash or imagen-3.0-generate-002
-      // For other models or if running outside Canvas, uncomment the line below and ensure you have an API key.
-      const apiKey = "" // If you want to use models other than gemini-2.0-flash or imagen-3.0-generate-002, provide an API key here. Otherwise, leave this as-is.
+      // (e.g., a Firebase Function or your own backend) to call the Generative AI API securely.
+      // The API key should only be accessible on your backend.
 
-      // Validate API Key presence only if not running in Canvas or for other models
-      // In Canvas, __api_key is automatically injected, so this check might be overly strict for that environment.
-      // If you are running locally and not setting REACT_APP_GEMINI_API_KEY, you might need to manually put your key here.
-      if (!apiKey && typeof __api_key === 'undefined') { // Check if apiKey is empty AND not in Canvas environment
-        setResult("API Key is not configured. For local development, set REACT_APP_GEMINI_API_KEY in your .env file or hardcode it (temporarily). In Canvas, it's auto-provided for allowed models.");
-        setIsPredicting(false);
-        return;
+      const API_KEY = import.meta.env.VITE_GEMINI_API_KEY;
+      if (!API_KEY) {
+        throw new Error("Gemini API Key is not configured. Please check your .env file.");
       }
 
-      const prompt = `Predict the winner of the match between ${selectedMatch.teamA} and ${selectedMatch.teamB} for a football/soccer tournament. Consider general team strengths and provide a brief, concise reason for the prediction. Do not include probabilities or scores.`;
-      const chatHistory = [{ role: "user", parts: [{ text: prompt }] }];
-      const payload = { contents: chatHistory };
-      
-      // Use gemini-2.0-flash as the default for text generation unless specified by the user
-      const apiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${apiKey}`; 
+      const selectedFixture = fixtures.find(f => f.id === selectedMatch);
+      if (!selectedFixture) {
+        throw new Error("Selected fixture not found.");
+      }
 
-      const response = await fetch(apiUrl, {
+      const prompt = `Predict the winner or outcome of a football match between ${selectedFixture.teamA} and ${selectedFixture.teamB}.
+      Consider general team strengths, current form (if known, otherwise assume average), and head-to-head records (if available, otherwise ignore).
+      Provide a concise prediction.`;
+
+      const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-pro:generateContent?key=${API_KEY}`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(payload)
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          contents: [{ parts: [{ text: prompt }] }],
+        }),
       });
 
       if (!response.ok) {
-        const errorBody = await response.json();
-        console.error('API call failed:', response.status, response.statusText, errorBody);
-        setResult(`Failed to get prediction: ${errorBody.error?.message || 'Unknown error'}. Check API key and quota.`);
-        return;
+        const errorData = await response.json();
+        console.error("API Error:", errorData);
+        throw new Error(`Failed to get prediction: ${errorData.error.message || response.statusText}`);
       }
 
-      const resultData = await response.json();
+      const data = await response.json();
+      const predictionText = data.candidates?.[0]?.content?.parts?.[0]?.text || 'No prediction could be generated.';
+      setResult(predictionText);
 
-      if (resultData.candidates && resultData.candidates.length > 0 &&
-          resultData.candidates[0].content && resultData.candidates[0].content.parts &&
-          resultData.candidates[0].content.parts.length > 0) {
-        const text = resultData.candidates[0].content.parts[0].text;
-        setResult(text);
-      } else {
-        setResult('Could not get a prediction at this time. The AI returned an unexpected response structure.');
-      }
-    } catch (apiError) {
-      console.error('Error calling generative AI API:', apiError);
-      setResult(`Error getting prediction from AI: ${apiError.message}. Please try again later.`);
+    } catch (err) {
+      console.error("Prediction error:", err);
+      setResult(`Prediction failed: ${err.message}`);
+      setError(err.message);
     } finally {
       setIsPredicting(false);
     }
   };
 
+  if (loading) {
+    return (
+      <div className="min-h-screen flex items-center justify-center bg-gray-100 dark:bg-gray-900 text-gray-900 dark:text-white">
+        <p className="text-lg font-semibold animate-pulse">Loading AI Prediction page...</p>
+      </div>
+    );
+  }
+
+  if (error) {
+    return (
+      <div className="min-h-screen flex items-center justify-center bg-gray-100 dark:bg-gray-900 text-gray-900 dark:text-white p-4">
+        <p className="text-lg font-semibold text-red-500 text-center">Error: {error}</p>
+      </div>
+    );
+  }
+
   return (
-    <div className="p-6 bg-gray-100 dark:bg-gray-900 text-gray-900 dark:text-white min-h-screen">
-      <h2 className="text-3xl font-extrabold mb-6 text-center">🤖 AI Match Prediction</h2>
-      <p className="text-lg text-center mb-8">Select a match to get an AI-powered prediction for the winner.</p>
+    <div className="min-h-screen bg-gray-100 dark:bg-gray-900 text-gray-900 dark:text-white">
+      <div className="p-4 sm:p-6 max-w-4xl mx-auto"> {/* Adjusted padding for responsiveness */}
+        <h2 className="text-2xl sm:text-3xl font-extrabold mb-6 sm:mb-8 text-center text-red-600 dark:text-red-500">
+          ✨ AI Match Prediction for {tournamentName}
+        </h2>
 
-      {loading ? (
-        <p className="text-gray-500 text-center py-4">Loading matches...</p>
-      ) : error ? (
-        <p className="text-red-500 text-center py-4">{error}</p>
-      ) : fixtures.length === 0 ? (
-        <p className="text-gray-500 text-center py-4">No matches available for this tournament yet.</p>
-      ) : (
-        <div className="max-w-md mx-auto bg-white dark:bg-gray-800 p-6 rounded-lg shadow-xl space-y-6">
-          {/* Match selection dropdown */}
-          <div className="flex flex-col">
-            <label htmlFor="match-select" className="mb-2 font-medium text-gray-700 dark:text-gray-300">Choose a Match:</label>
-            <select
-              id="match-select"
-              onChange={(e) => {
-                const match = fixtures.find(f => f.id === e.target.value);
-                setSelectedMatch(match);
-                setResult(null); // Clear result when a new match is selected
-              }}
-              value={selectedMatch?.id || ''}
-              className="px-4 py-2 border rounded-md dark:bg-gray-700 dark:text-white focus:outline-none focus:ring-2 focus:ring-blue-500"
-              disabled={isPredicting} // Disable dropdown during prediction
-            >
-              <option value="">-- Select a match --</option>
-              {fixtures.map(f => (
-                <option key={f.id} value={f.id}>
-                  {f.teamA} vs {f.teamB} {f.status === 'completed' && ` (Final: ${f.scoreA}-${f.scoreB})`}
-                </option>
-              ))}
-            </select>
-          </div>
+        {fixtures.length === 0 ? (
+          <p className="text-center text-gray-500 dark:text-gray-400 text-lg py-10">
+            No upcoming fixtures to predict.
+          </p>
+        ) : (
+          <div className="bg-white dark:bg-gray-800 p-6 rounded-lg shadow-xl border border-gray-200 dark:border-gray-700">
+            <p className="text-md sm:text-lg mb-4 text-gray-800 dark:text-gray-200">
+              Select a match to get an AI-powered prediction:
+            </p>
 
-          {/* Predict button */}
-          <button
-            onClick={handlePredict}
-            className={`w-full bg-blue-600 text-white font-semibold py-2 px-4 rounded-md transition-colors text-lg
-                        ${!selectedMatch || isPredicting ? 'opacity-50 cursor-not-allowed' : 'hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-opacity-75'
-                      }`}
-            disabled={!selectedMatch || isPredicting}
-          >
-            {isPredicting ? (
-              <div className="flex items-center justify-center">
-                <svg className="animate-spin -ml-1 mr-3 h-5 w-5 text-white" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
-                  <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
-                  <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
-                </svg>
-                Predicting...
-              </div>
-            ) : (
-              'Predict Winner'
-            )}
-          </button>
+            <div className="flex flex-col sm:flex-row items-center gap-4 mb-6"> {/* Responsive layout for controls */}
+              <select
+                className="w-full sm:w-2/3 px-4 py-2 border border-gray-300 rounded-md bg-gray-50 dark:bg-gray-700 dark:border-gray-600 dark:text-white
+                           focus:outline-none focus:ring-2 focus:ring-blue-500 text-base sm:text-lg"
+                onChange={(e) => setSelectedMatch(e.target.value)}
+                value={selectedMatch || ''}
+              >
+                <option value="">-- Select a Match --</option>
+                {fixtures.map((fixture) => (
+                  <option key={fixture.id} value={fixture.id}>
+                    {fixture.teamA} vs {fixture.teamB} (
+                    {new Date(fixture.timestamp?.toDate()).toLocaleDateString()})
+                  </option>
+                ))}
+              </select>
 
-          {/* Prediction result display */}
-          {result && (
-            <div className={`mt-4 p-4 rounded-lg ${result.includes('Error') || result.includes('invalid') || result.includes('not configured') ? 'bg-red-100 dark:bg-red-800 text-red-800 dark:text-red-200' : 'bg-green-100 dark:bg-green-800 text-green-800 dark:text-green-200'}`}>
-              <p className="font-semibold text-xl mb-2">Prediction:</p>
-              <p className="text-lg">{result}</p>
+              <button
+                className={`w-full sm:w-1/3 px-4 py-2 rounded-md font-semibold text-lg transition-colors
+                            ${selectedMatch && !isPredicting
+                                ? 'bg-red-600 text-white hover:bg-red-700'
+                                : 'bg-gray-300 text-gray-600 cursor-not-allowed dark:bg-gray-700 dark:text-gray-400'
+                            }`}
+                onClick={handlePredict}
+                disabled={!selectedMatch || isPredicting}
+              >
+                {isPredicting ? 'Predicting...' : 'Predict Outcome'}
+              </button>
             </div>
-          )}
-        </div>
-      )}
+
+            {result && (
+              <div className="mt-6 p-4 bg-blue-50 dark:bg-blue-900 border border-blue-200 dark:border-blue-700 rounded-md shadow-inner">
+                <h3 className="text-lg sm:text-xl font-semibold text-blue-800 dark:text-blue-200 mb-2">Prediction:</h3>
+                <p className="text-gray-700 dark:text-gray-300 text-base sm:text-lg">{result}</p>
+              </div>
+            )}
+          </div>
+        )}
+      </div>
     </div>
   );
 }

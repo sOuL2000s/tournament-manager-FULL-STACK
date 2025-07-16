@@ -4,7 +4,10 @@ import {
   createUserWithEmailAndPassword,
   signInWithEmailAndPassword,
   signOut,
-  onAuthStateChanged
+  onAuthStateChanged,
+  GoogleAuthProvider, // Import GoogleAuthProvider
+  signInWithPopup,    // Import signInWithPopup
+  sendPasswordResetEmail // Import sendPasswordResetEmail
 } from 'firebase/auth';
 import { doc, setDoc } from 'firebase/firestore'; // For creating/updating user profiles in Firestore
 
@@ -17,6 +20,8 @@ import { doc, setDoc } from 'firebase/firestore'; // For creating/updating user 
  * error: Error | null,
  * register: (email: string, password: string) => Promise<import('firebase/auth').User>,
  * login: (email: string, password: string) => Promise<import('firebase/auth').User>,
+ * loginWithGoogle: () => Promise<import('firebase/auth').User>, // New function
+ * resetPassword: (email: string) => Promise<void>,             // New function
  * logout: () => Promise<void>
  * }}
  */
@@ -37,26 +42,17 @@ export const useAuth = () => {
         console.log("Firebase Auth State Changed: User signed in:", firebaseUser.uid);
 
         // Ensure a user document exists in Firestore for this user's UID.
-        // This is where custom user profile data would typically be stored.
         const userDocRef = doc(db, 'users', firebaseUser.uid);
         try {
-          // IMPORTANT: The Firebase 'User' object (firebaseUser) itself does NOT have a 'profile' property.
-          // If you saw a TypeError reading 'profile', it was likely from:
-          // 1. An older version of your code or an injected script trying to access `firebaseUser.profile`.
-          // 2. An assumption that 'profile' is directly on the Firebase User object.
-          // Your current `setDoc` correctly accesses standard Firebase User properties.
           await setDoc(userDocRef, {
             email: firebaseUser.email,
-            createdAt: firebaseUser.metadata?.creationTime, // Use optional chaining for metadata
-            lastSignInTime: firebaseUser.metadata?.lastSignInTime, // Use optional chaining
-            displayName: firebaseUser.displayName || 'Anonymous User', // Provide a fallback if displayName is null
-            // If you need custom profile data, ensure it's structured here (e.g., bio, favoriteTeam)
-            // Example: customField: 'someValue',
-          }, { merge: true }); // Use merge: true to update existing fields without overwriting the entire document
+            createdAt: firebaseUser.metadata?.creationTime,
+            lastSignInTime: firebaseUser.metadata?.lastSignInTime,
+            displayName: firebaseUser.displayName || 'Anonymous User',
+          }, { merge: true });
           console.log("User profile ensured in Firestore for:", firebaseUser.uid);
         } catch (firestoreError) {
           console.error("Error ensuring user profile in Firestore:", firestoreError);
-          // Do not set error state here if it shouldn't block authentication flow; just log.
         }
 
       } else {
@@ -74,7 +70,7 @@ export const useAuth = () => {
 
     // Cleanup function: Unsubscribe from the auth state listener when the component unmounts.
     return () => unsubscribe();
-  }, []); // Empty dependency array means this effect runs only once on mount and cleans up on unmount.
+  }, []);
 
   /**
    * Registers a new user with email and password.
@@ -88,14 +84,13 @@ export const useAuth = () => {
     setError(null);
     try {
       const userCredential = await createUserWithEmailAndPassword(auth, email, password);
-      // The `onAuthStateChanged` listener above will automatically update the `user` state.
       console.log("User registered:", userCredential.user.uid);
       return userCredential.user;
     } catch (authError) {
       console.error("Registration error:", authError);
       setError(authError);
       setLoading(false);
-      throw authError; // Re-throw to allow calling components to handle specific error messages.
+      throw authError;
     }
   };
 
@@ -111,16 +106,58 @@ export const useAuth = () => {
     setError(null);
     try {
       const userCredential = await signInWithEmailAndPassword(auth, email, password);
-      // The `onAuthStateChanged` listener above will automatically update the `user` state.
       console.log("User logged in:", userCredential.user.uid);
       return userCredential.user;
     } catch (authError) {
       console.error("Login error:", authError);
       setError(authError);
       setLoading(false);
-      throw authError; // Re-throw to allow calling components to handle specific error messages.
+      throw authError;
     }
   };
+
+  /**
+   * Logs in a user using Google authentication.
+   * @returns {Promise<import('firebase/auth').User>} A promise that resolves with the Firebase User object.
+   * @throws {Error} Throws a Firebase Auth error if login fails.
+   */
+  const loginWithGoogle = async () => {
+    setLoading(true);
+    setError(null);
+    try {
+      const provider = new GoogleAuthProvider();
+      const userCredential = await signInWithPopup(auth, provider);
+      console.log("User logged in with Google:", userCredential.user.uid);
+      return userCredential.user;
+    } catch (authError) {
+      console.error("Google login error:", authError);
+      setError(authError);
+      setLoading(false);
+      throw authError;
+    }
+  };
+
+  /**
+   * Sends a password reset email to the specified email address.
+   * @param {string} email - The user's email address.
+   * @returns {Promise<void>} A promise that resolves when the email is sent.
+   * @throws {Error} Throws a Firebase Auth error if sending fails.
+   */
+  const resetPassword = async (email) => {
+    setLoading(true);
+    setError(null);
+    try {
+      await sendPasswordResetEmail(auth, email);
+      console.log("Password reset email sent to:", email);
+    } catch (authError) {
+      console.error("Password reset error:", authError);
+      setError(authError);
+      throw authError;
+    } finally {
+      setLoading(false);
+    }
+  };
+
 
   /**
    * Logs out the current user.
@@ -132,16 +169,15 @@ export const useAuth = () => {
     setError(null);
     try {
       await signOut(auth);
-      // The `onAuthStateChanged` listener will automatically set `user` to `null`.
       console.log("User logged out.");
     } catch (authError) {
       console.error("Logout error:", authError);
       setError(authError);
       setLoading(false);
-      throw authError; // Re-throw to allow calling components to handle specific error messages.
+      throw authError;
     }
   };
 
   // Return the user, loading state, error, and authentication functions for consumption by components.
-  return { user, loading, error, register, login, logout };
+  return { user, loading, error, register, login, loginWithGoogle, resetPassword, logout };
 };
