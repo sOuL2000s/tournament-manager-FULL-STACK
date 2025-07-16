@@ -13,6 +13,7 @@ import {
   writeBatch,
   getDocs,
   serverTimestamp,
+  getDoc, // Added getDoc
 } from 'firebase/firestore';
 import { db } from '../firebase';
 import { useAuth } from '../hooks/useAuth';
@@ -21,7 +22,7 @@ import ScoreInputModalContent from '../components/ScoreInputModalContent';
 
 export default function FixturesPage() {
   const { id: tournamentId } = useParams();
-  
+
   // All hooks must be declared at the top level, unconditionally
   const [fixtures, setFixtures] = useState([]);
   const [teams, setTeams] = useState([]);
@@ -37,6 +38,7 @@ export default function FixturesPage() {
     scoreA: 0,
     scoreB: 0,
     weekNumber: 0, // Default to 0 for manually added fixtures
+    groupId: '', // New field for group ID
   });
   const [fixtureError, setFixtureError] = useState('');
   const [tournamentDetails, setTournamentDetails] = useState(null);
@@ -256,52 +258,64 @@ export default function FixturesPage() {
     }
 
     const currentFixtureOption = tournamentDetails.fixtureOption || 'Single Matches';
-    const teamNames = teams.map(t => t.name);
-    const generatedFixturesWithWeekNumbers = generateRoundRobinFixtures(teamNames, currentFixtureOption === 'Home and Away Matches');
+    const isHomeAndAway = currentFixtureOption === 'Home and Away Matches';
 
+    let allGeneratedFixtures = [];
     let currentDate = new Date();
     currentDate.setHours(12, 0, 0, 0); // Normalize to midday to avoid timezone issues
 
-    const finalFixturesToSave = [];
+    if (tournamentDetails.type === 'Multi-Phase' && tournamentDetails.groups && tournamentDetails.groups.length > 0) {
+      // Generate fixtures for each group
+      for (const groupName of tournamentDetails.groups) {
+        const teamsInGroup = teams.filter(team => team.group === groupName);
+        if (teamsInGroup.length < 2) {
+          console.warn(`Skipping fixture generation for group "${groupName}": Not enough teams.`);
+          continue;
+        }
+        const teamNamesInGroup = teamsInGroup.map(t => t.name);
+        const groupFixtures = generateRoundRobinFixtures(teamNamesInGroup, isHomeAndAway);
 
-    // Group fixtures by week number and ensure weeks are processed in order
-    const groupedByWeek = generatedFixturesWithWeekNumbers.reduce((acc, fixture) => {
-      const weekNum = fixture.weekNumber;
-      if (!acc[weekNum]) {
-        acc[weekNum] = [];
+        groupFixtures.forEach(fixture => {
+          allGeneratedFixtures.push({
+            ...fixture,
+            groupId: groupName, // Assign fixture to its group
+            date: currentDate.toISOString().split('T')[0],
+            timestamp: new Date(currentDate),
+            status: 'scheduled',
+            scoreA: 0,
+            scoreB: 0,
+          });
+        });
+        // You might want to advance date per group or per week across all groups
+        // For simplicity, we'll just keep advancing it globally for now.
+        currentDate.setDate(currentDate.getDate() + 7); // Advance date for next group/week
       }
-      acc[weekNum].push(fixture);
-      return acc;
-    }, {});
+    } else {
+      // Existing logic for League or Knockout type, or Multi-Phase without groups defined
+      const teamNames = teams.map(t => t.name);
+      const generatedFixturesWithWeekNumbers = generateRoundRobinFixtures(teamNames, isHomeAndAway);
 
-    const sortedWeekNumbers = Object.keys(groupedByWeek).sort((a, b) => parseInt(a) - parseInt(b));
-
-    sortedWeekNumbers.forEach(weekNum => {
-      const fixturesInThisWeek = groupedByWeek[weekNum];
-      fixturesInThisWeek.forEach(fixture => {
-        finalFixturesToSave.push({
-          teamA: fixture.teamA,
-          teamB: fixture.teamB,
-          date: currentDate.toISOString().split('T')[0], // Store date as string for easy display
-          timestamp: new Date(currentDate), // Store as Date object for Firestore Timestamp conversion
+      generatedFixturesWithWeekNumbers.forEach(fixture => {
+        allGeneratedFixtures.push({
+          ...fixture,
+          groupId: '', // No group for non-grouped tournaments
+          date: currentDate.toISOString().split('T')[0],
+          timestamp: new Date(currentDate),
           status: 'scheduled',
           scoreA: 0,
           scoreB: 0,
-          weekNumber: parseInt(weekNum), // Store week number for display/grouping
         });
       });
-      currentDate.setDate(currentDate.getDate() + 7); // Increment date by 7 days for next week
-    });
+    }
 
-
-    if (finalFixturesToSave.length === 0) {
-      openCustomModal('Info', 'No fixtures could be generated. Check your team list and fixture options.', null, false);
+    if (allGeneratedFixtures.length === 0) {
+      openCustomModal('Info', 'No fixtures could be generated. Check your team list, groups, and fixture options.', null, false);
       return;
     }
 
     openCustomModal(
       'Confirm Fixture Generation',
-      `This will delete ALL existing fixtures and generate ${finalFixturesToSave.length} new ones based on '${currentFixtureOption}'. Are you sure?`,
+      `This will delete ALL existing fixtures and generate ${allGeneratedFixtures.length} new ones. Are you sure?`,
       async () => {
         const batch = writeBatch(db);
         const fixturesCollectionRef = collection(db, `tournaments/${tournamentId}/fixtures`);
@@ -313,7 +327,7 @@ export default function FixturesPage() {
         });
 
         // Add new fixtures
-        finalFixturesToSave.forEach(fixture => {
+        allGeneratedFixtures.forEach(fixture => {
           const newFixtureRef = doc(fixturesCollectionRef); // Let Firestore auto-generate ID
           batch.set(newFixtureRef, fixture);
         });
@@ -321,7 +335,7 @@ export default function FixturesPage() {
         try {
           await batch.commit();
           closeCustomModal();
-          openCustomModal('Success', `Successfully generated ${finalFixturesToSave.length} fixtures!`, null, false);
+          openCustomModal('Success', `Successfully generated ${allGeneratedFixtures.length} fixtures!`, null, false);
           // Optionally, trigger a leaderboard update here if it depends on fixtures
           // For now, assume leaderboard update is handled elsewhere or is reactive to fixture changes
         } catch (err) {
@@ -347,6 +361,20 @@ export default function FixturesPage() {
       setFixtureError('Teams cannot be the same.');
       return;
     }
+    // For multi-phase, ensure teams selected are from the same group if groups exist
+    if (tournamentDetails?.type === 'Multi-Phase' && tournamentDetails.groups && tournamentDetails.groups.length > 0) {
+        const teamAObj = teams.find(t => t.name === newFixture.teamA);
+        const teamBObj = teams.find(t => t.name === newFixture.teamB);
+
+        if (!teamAObj || !teamBObj || teamAObj.group !== teamBObj.group) {
+            setFixtureError('For Multi-Phase tournaments, teams must be from the same group for custom fixtures.');
+            return;
+        }
+        newFixture.groupId = teamAObj.group; // Assign group ID to the fixture
+    } else {
+        newFixture.groupId = ''; // Clear group ID if not multi-phase or no groups
+    }
+
 
     try {
       const fixtureDate = new Date(newFixture.date);
@@ -365,7 +393,7 @@ export default function FixturesPage() {
         status: 'scheduled', // Default status
         weekNumber: 0, // Manually added fixtures default to week 0, can be updated later if needed
       });
-      setNewFixture({ teamA: '', teamB: '', date: '', timestamp: null, status: 'scheduled', scoreA: 0, scoreB: 0 }); // Reset form
+      setNewFixture({ teamA: '', teamB: '', date: '', timestamp: null, status: 'scheduled', scoreA: 0, scoreB: 0, groupId: '' }); // Reset form
       setFixtureError(''); // Clear any previous errors
       setIsAddingFixture(false); // Hide the form after adding
     } catch (err) {
@@ -475,23 +503,44 @@ export default function FixturesPage() {
   };
 
   const groupedFixtures = useMemo(() => {
-    return fixtures.reduce((acc, fixture) => {
-      const week = fixture.weekNumber > 0 ? `Week ${fixture.weekNumber}` : 'Manual Fixtures';
-      if (!acc[week]) {
-        acc[week] = [];
+    const groupedByGroup = fixtures.reduce((acc, fixture) => {
+      const group = fixture.groupId || 'Ungrouped'; // Use 'Ungrouped' for fixtures without a group
+      if (!acc[group]) {
+        acc[group] = {};
       }
-      acc[week].push(fixture);
+      const week = fixture.weekNumber > 0 ? `Week ${fixture.weekNumber}` : 'Manual Fixtures';
+      if (!acc[group][week]) {
+        acc[group][week] = [];
+      }
+      acc[group][week].push(fixture);
       return acc;
     }, {});
-  }, [fixtures]);
 
-  const sortedWeeks = useMemo(() => {
-    return Object.keys(groupedFixtures).sort((a, b) => {
-      if (a === 'Manual Fixtures') return 1; // Manual fixtures last
-      if (b === 'Manual Fixtures') return -1;
-      return parseInt(a.split(' ')[1]) - parseInt(b.split(' ')[1]); // Sort by week number
+    // Sort groups alphabetically, with 'Ungrouped' last
+    const sortedGroupNames = Object.keys(groupedByGroup).sort((a, b) => {
+      if (a === 'Ungrouped') return 1;
+      if (b === 'Ungrouped') return -1;
+      return a.localeCompare(b);
     });
-  }, [groupedFixtures]);
+
+    const finalGrouped = {};
+    sortedGroupNames.forEach(groupName => {
+      finalGrouped[groupName] = groupedByGroup[groupName];
+      // Sort weeks within each group
+      const sortedWeekNumbers = Object.keys(finalGrouped[groupName]).sort((a, b) => {
+        if (a === 'Manual Fixtures') return 1;
+        if (b === 'Manual Fixtures') return -1;
+        return parseInt(a.split(' ')[1]) - parseInt(b.split(' ')[1]);
+      });
+      const sortedWeeksObj = {};
+      sortedWeekNumbers.forEach(week => {
+        sortedWeeksObj[week] = finalGrouped[groupName][week];
+      });
+      finalGrouped[groupName] = sortedWeeksObj;
+    });
+
+    return finalGrouped;
+  }, [fixtures]);
 
 
   if (loading) {
@@ -606,53 +655,60 @@ export default function FixturesPage() {
           <p className="text-center text-gray-500 dark:text-gray-400 text-lg mt-8">No fixtures found. Generate or add some!</p>
         ) : (
           <div className="space-y-8 mt-8">
-            {sortedWeeks.map(week => (
-              <div key={week} className="bg-white dark:bg-gray-800 p-6 rounded-lg shadow-xl">
-                <h3 className="text-xl sm:text-2xl font-bold mb-6 text-center text-gray-800 dark:text-white">{week}</h3>
-                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-                  {groupedFixtures[week].map((fixture) => (
-                    <div
-                      key={fixture.id}
-                      className="bg-gray-50 dark:bg-gray-700 p-6 rounded-lg shadow-md flex flex-col justify-between transition-transform transform hover:scale-[1.02] border border-gray-200 dark:border-gray-600"
-                    >
-                      <div>
-                        <p className="text-sm text-gray-500 dark:text-gray-300 mb-2">{fixture.date}</p>
-                        <div className="flex justify-between items-center text-lg font-semibold mb-4">
-                          <span>{fixture.teamA}</span>
-                          <span className="mx-2">vs</span>
-                          <span>{fixture.teamB}</span>
-                        </div>
-                        <div className="text-center text-2xl font-bold mb-4">
-                          {fixture.status === 'completed' ? (
-                            <span className="text-green-600 dark:text-green-400">
-                              {fixture.scoreA} - {fixture.scoreB}
-                            </span>
-                          ) : (
-                            <span className="text-yellow-600 dark:text-yellow-400">
-                              Scheduled
-                            </span>
+            {Object.keys(groupedFixtures).map(groupName => (
+              <div key={groupName} className="bg-white dark:bg-gray-800 p-6 rounded-lg shadow-xl">
+                <h3 className="text-xl sm:text-2xl font-bold mb-6 text-center text-gray-800 dark:text-white">
+                  {groupName !== 'Ungrouped' ? `Group ${groupName}` : 'Ungrouped Fixtures'}
+                </h3>
+                {Object.keys(groupedFixtures[groupName]).map(week => (
+                  <div key={`${groupName}-${week}`} className="mb-8">
+                    <h4 className="text-lg sm:text-xl font-semibold mb-4 text-gray-700 dark:text-gray-300 text-center">{week}</h4>
+                    <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+                      {groupedFixtures[groupName][week].map((fixture) => (
+                        <div
+                          key={fixture.id}
+                          className="bg-gray-50 dark:bg-gray-700 p-6 rounded-lg shadow-md flex flex-col justify-between transition-transform transform hover:scale-[1.02] border border-gray-200 dark:border-gray-600"
+                        >
+                          <div>
+                            <p className="text-sm text-gray-500 dark:text-gray-300 mb-2">{fixture.date}</p>
+                            <div className="flex justify-between items-center text-lg font-semibold mb-4">
+                              <span>{fixture.teamA}</span>
+                              <span className="mx-2">vs</span>
+                              <span>{fixture.teamB}</span>
+                            </div>
+                            <div className="text-center text-2xl font-bold mb-4">
+                              {fixture.status === 'completed' ? (
+                                <span className="text-green-600 dark:text-green-400">
+                                  {fixture.scoreA} - {fixture.scoreB}
+                                </span>
+                              ) : (
+                                <span className="text-yellow-600 dark:text-yellow-400">
+                                  Scheduled
+                                </span>
+                              )}
+                            </div>
+                          </div>
+                          {!isViewOnly && (
+                            <div className="flex flex-col sm:flex-row gap-3 mt-4">
+                              <button
+                                onClick={() => handleOpenScoreModal(fixture)}
+                                className="flex-1 bg-purple-600 text-white px-4 py-2 rounded-md hover:bg-purple-700 transition-colors font-semibold"
+                              >
+                                Update Score
+                              </button>
+                              <button
+                                onClick={() => handleDeleteFixture(fixture.id)}
+                                className="flex-1 bg-red-500 text-white px-4 py-2 rounded-md hover:bg-red-600 transition-colors font-semibold"
+                              >
+                                Delete
+                              </button>
+                            </div>
                           )}
                         </div>
-                      </div>
-                      {!isViewOnly && (
-                        <div className="flex flex-col sm:flex-row gap-3 mt-4">
-                          <button
-                            onClick={() => handleOpenScoreModal(fixture)}
-                            className="flex-1 bg-purple-600 text-white px-4 py-2 rounded-md hover:bg-purple-700 transition-colors font-semibold"
-                          >
-                            Update Score
-                          </button>
-                          <button
-                            onClick={() => handleDeleteFixture(fixture.id)}
-                            className="flex-1 bg-red-500 text-white px-4 py-2 rounded-md hover:bg-red-600 transition-colors font-semibold"
-                          >
-                            Delete
-                          </button>
-                        </div>
-                      )}
+                      ))}
                     </div>
-                  ))}
-                </div>
+                  </div>
+                ))}
               </div>
             ))}
           </div>

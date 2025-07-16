@@ -1,3 +1,4 @@
+// src/pages/TournamentPage.jsx
 import React, { useEffect, useState, useCallback, useRef } from 'react';
 import { db } from '../firebase';
 import {
@@ -40,8 +41,13 @@ export default function TournamentPage() {
 
   // Team Management State
   const [teams, setTeams] = useState([]);
-  const [newTeamName, setNewTeamName] = useState('');
+  const [newTeam, setNewTeam] = useState({ name: '', group: '' }); // Modified to include group
   const [teamError, setTeamError] = useState('');
+
+  // Group Management State
+  const [groups, setGroups] = useState([]); // New state for groups
+  const [newGroupName, setNewGroupName] = useState(''); // New state for adding new group
+  const [groupError, setGroupError] = useState(''); // New state for group errors
 
   // Fixture Management State
   const [fixtures, setFixtures] = useState([]);
@@ -75,7 +81,7 @@ export default function TournamentPage() {
   const openCustomModal = useCallback((title, message, confirmAction = null, showConfirm = true, content = null) => {
     setModalTitle(title);
     setModalMessage(message);
-    setModalConfirmAction(() => confirmAction);
+    setModalConfirmAction(() => confirmAction); // Use a function to set state with a function
     setModalShowConfirmButton(showConfirm);
     setModalContent(content);
     setIsModalOpen(true);
@@ -138,6 +144,7 @@ export default function TournamentPage() {
             setFixtureOption(data.fixtureOption || 'Single Matches');
             setPointsPerWin(data.pointsPerWin !== undefined ? data.pointsPerWin : 3);
             setPointsPerDraw(data.pointsPerDraw !== undefined ? data.pointsPerDraw : 1);
+            setGroups(data.groups || []); // Load groups
             setShareableLink(`${window.location.origin}/tournament/${tournamentId}?shareId=${tournamentId}`); // Re-generate for owner to copy
           } else if (currentIsViewOnly) {
             // Read-only access for public viewers (via share link or unauthenticated to public tourney)
@@ -150,6 +157,7 @@ export default function TournamentPage() {
             setFixtureOption(data.fixtureOption || 'Single Matches');
             setPointsPerWin(data.pointsPerWin !== undefined ? data.pointsPerWin : 3);
             setPointsPerDraw(data.pointsPerDraw !== undefined ? data.pointsPerDraw : 1);
+            setGroups(data.groups || []); // Load groups for view
             setShareableLink(''); // No share link to show for viewers
             // No error, as this is expected behavior for view-only.
           } else {
@@ -309,6 +317,66 @@ export default function TournamentPage() {
     }
   }, [fixtures, tournamentDetails, authLoading, user, updateLeaderboard, loadingTournamentData, isViewOnly, tournamentOwnerId]);
 
+  // --- Group Management Handlers ---
+  const handleAddGroup = async () => {
+    if (isViewOnly || user?.uid !== tournamentOwnerId) {
+      openCustomModal('Access Denied', 'You do not have permission to add groups.', null, false);
+      return;
+    }
+    setGroupError('');
+    if (!newGroupName.trim()) {
+      setGroupError('Group name cannot be empty.');
+      return;
+    }
+    if (groups.includes(newGroupName.trim())) {
+      setGroupError('A group with this name already exists.');
+      return;
+    }
+    try {
+      const updatedGroups = [...groups, newGroupName.trim()];
+      const tournamentRef = doc(db, 'tournaments', tournamentId);
+      await updateDoc(tournamentRef, { groups: updatedGroups });
+      setGroups(updatedGroups);
+      setNewGroupName('');
+    } catch (err) {
+      console.error('Error adding group:', err);
+      setGroupError('Failed to add group. Please try again.');
+    }
+  };
+
+  const handleDeleteGroup = async (groupToDelete) => {
+    if (isViewOnly || user?.uid !== tournamentOwnerId) {
+      openCustomModal('Access Denied', 'You do not have permission to delete groups.', null, false);
+      return;
+    }
+    openCustomModal(
+      'Confirm Delete Group',
+      `Are you sure you want to delete group "${groupToDelete}"? Teams assigned to this group will no longer have a group.`,
+      async () => {
+        try {
+          const updatedGroups = groups.filter(group => group !== groupToDelete);
+          const tournamentRef = doc(db, 'tournaments', tournamentId);
+          await updateDoc(tournamentRef, { groups: updatedGroups });
+          setGroups(updatedGroups);
+
+          // Optionally, update teams that were in this group to have no group
+          const teamsInGroupQuery = query(collection(db, `tournaments/${tournamentId}/teams`), where('group', '==', groupToDelete));
+          const teamsInGroupSnapshot = await getDocs(teamsInGroupQuery);
+          const batch = writeBatch(db);
+          teamsInGroupSnapshot.docs.forEach(teamDoc => {
+            batch.update(teamDoc.ref, { group: '' });
+          });
+          await batch.commit();
+
+          closeCustomModal();
+        } catch (err) {
+          console.error('Error deleting group:', err);
+          openCustomModal('Error', 'Failed to delete group. Please try again.');
+        }
+      }
+    );
+  };
+
   // --- Team Management Handlers ---
   const handleAddTeam = async () => {
     if (isViewOnly || user?.uid !== tournamentOwnerId) {
@@ -316,17 +384,22 @@ export default function TournamentPage() {
       return;
     }
     setTeamError('');
-    if (!newTeamName.trim()) {
+    if (!newTeam.name.trim()) {
       setTeamError('Team name cannot be empty.');
       return;
     }
-    if (teams.some(team => team.name.toLowerCase() === newTeamName.trim().toLowerCase())) {
+    if (teams.some(team => team.name.toLowerCase() === newTeam.name.trim().toLowerCase())) {
       setTeamError('A team with this name already exists.');
       return;
     }
+    if (tournamentDetails?.type === 'Multi-Phase' && !newTeam.group && groups.length > 0) {
+        // Only enforce group selection if it's multi-phase AND groups have been defined
+        setTeamError('For Multi-Phase tournaments with defined groups, a team must be assigned to a group.');
+        return;
+    }
     try {
-      await addDoc(collection(db, `tournaments/${tournamentId}/teams`), { name: newTeamName });
-      setNewTeamName('');
+      await addDoc(collection(db, `tournaments/${tournamentId}/teams`), { name: newTeam.name.trim(), group: newTeam.group });
+      setNewTeam({ name: '', group: newTeam.group }); // Keep selected group for next add
     } catch (err) {
       console.error('Error adding team:', err);
       setTeamError('Failed to add team. Make sure the tournament ID is valid and you have permission.');
@@ -384,6 +457,53 @@ export default function TournamentPage() {
     );
   };
 
+  // --- Randomly Assign Teams to Groups Handler ---
+  const handleRandomlyAssignTeamsToGroups = async () => {
+    if (isViewOnly || user?.uid !== tournamentOwnerId) {
+      openCustomModal('Access Denied', 'You do not have permission to assign teams to groups.', null, false);
+      return;
+    }
+    if (tournamentDetails?.type !== 'Multi-Phase') {
+      openCustomModal('Info', 'This feature is only available for Multi-Phase Tournaments.', null, false);
+      return;
+    }
+    if (groups.length === 0) {
+      openCustomModal('Info', 'Please define some groups first (e.g., Group A, Group B).', null, false);
+      return;
+    }
+    if (teams.length === 0) {
+      openCustomModal('Info', 'Please add some teams first.', null, false);
+      return;
+    }
+
+    openCustomModal(
+      'Confirm Random Group Assignment',
+      'This will randomly assign all existing teams to your defined groups. Existing group assignments will be overwritten. Are you sure?',
+      async () => {
+        try {
+          const shuffledTeams = [...teams].sort(() => Math.random() - 0.5); // Shuffle teams
+          const batch = writeBatch(db);
+          let groupIndex = 0;
+
+          shuffledTeams.forEach(team => {
+            const assignedGroup = groups[groupIndex % groups.length];
+            const teamRef = doc(db, `tournaments/${tournamentId}/teams`, team.id);
+            batch.update(teamRef, { group: assignedGroup });
+            groupIndex++;
+          });
+
+          await batch.commit();
+          closeCustomModal();
+          openCustomModal('Success', 'Teams randomly assigned to groups successfully!', null, false);
+        } catch (err) {
+          console.error('Error assigning teams to groups:', err);
+          openCustomModal('Error', 'Failed to assign teams to groups. Please try again.', null, false);
+        }
+      }
+    );
+  };
+
+
   // --- Tournament Settings Handlers ---
   const handleSaveTournamentSettings = async () => {
     if (isViewOnly || user?.uid !== tournamentOwnerId) {
@@ -400,6 +520,7 @@ export default function TournamentPage() {
         fixtureOption: fixtureOption,
         pointsPerWin: parseInt(pointsPerWin) || 3,
         pointsPerDraw: parseInt(pointsPerDraw) || 1,
+        groups: groups, // Save groups to tournament document
       });
       openCustomModal('Success', 'Tournament settings saved successfully!', null, false);
       setTournamentDetails(prev => ({
@@ -411,6 +532,7 @@ export default function TournamentPage() {
         fixtureOption: fixtureOption,
         pointsPerWin: parseInt(pointsPerWin) || 3,
         pointsPerDraw: parseInt(pointsPerDraw) || 1,
+        groups: groups, // Update local state for consistency
       }));
     } catch (err) {
       console.error('Error saving tournament configuration:', err);
@@ -988,13 +1110,69 @@ export default function TournamentPage() {
             {teamError && <p className="text-red-500 mb-4">{teamError}</p>}
             {(!isViewOnly && isOwner) && (
               <div className="mb-6">
+                {tournamentDetails?.type === 'Multi-Phase' && (
+                    <div className="mb-4">
+                        <h3 className="text-lg font-bold mb-2 text-gray-800 dark:text-white">Group Management</h3>
+                        <div className="flex mb-2">
+                            <input
+                                type="text"
+                                placeholder="New group name (e.g., Group A)"
+                                value={newGroupName}
+                                onChange={(e) => setNewGroupName(e.target.value)}
+                                className="flex-grow p-2 border border-gray-300 rounded-l-md dark:bg-gray-700 dark:border-gray-600 dark:text-white"
+                            />
+                            <button
+                                onClick={handleAddGroup}
+                                className="bg-blue-500 text-white px-4 py-2 rounded-r-md hover:bg-blue-600 transition-colors"
+                            >
+                                Add Group
+                            </button>
+                        </div>
+                        {groupError && <p className="text-red-500 text-sm mb-2">{groupError}</p>}
+                        {groups.length > 0 && (
+                            <div className="border border-gray-300 dark:border-gray-600 rounded-md p-2 max-h-32 overflow-y-auto mb-4">
+                                <p className="text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Existing Groups:</p>
+                                {groups.map((group, index) => (
+                                    <div key={index} className="flex justify-between items-center bg-gray-100 dark:bg-gray-700 p-2 rounded-md mb-1">
+                                        <span className="text-gray-900 dark:text-white">{group}</span>
+                                        <button
+                                            onClick={() => handleDeleteGroup(group)}
+                                            className="text-red-500 hover:text-red-700 text-sm"
+                                        >
+                                            Delete
+                                        </button>
+                                    </div>
+                                ))}
+                            </div>
+                        )}
+                        <button
+                            onClick={handleRandomlyAssignTeamsToGroups}
+                            className="bg-indigo-600 text-white px-4 py-2 rounded-md text-sm hover:bg-indigo-700 transition-colors font-semibold w-full"
+                        >
+                            Randomly Assign Teams to Groups
+                        </button>
+                    </div>
+                )}
+
                 <input
                   type="text"
                   placeholder="New team name"
-                  value={newTeamName}
-                  onChange={(e) => setNewTeamName(e.target.value)}
+                  value={newTeam.name}
+                  onChange={(e) => setNewTeam({ ...newTeam, name: e.target.value })}
                   className="w-full p-2 border border-gray-300 rounded-md mb-2 dark:bg-gray-700 dark:border-gray-600 dark:text-white"
                 />
+                {tournamentDetails?.type === 'Multi-Phase' && groups.length > 0 && (
+                    <select
+                        value={newTeam.group}
+                        onChange={(e) => setNewTeam({ ...newTeam, group: e.target.value })}
+                        className="w-full p-2 border border-gray-300 rounded-md mb-2 dark:bg-gray-700 dark:border-gray-600 dark:text-white"
+                    >
+                        <option value="">Select Group</option>
+                        {groups.map((group, index) => (
+                            <option key={index} value={group}>{group}</option>
+                        ))}
+                    </select>
+                )}
                 <button
                   onClick={handleAddTeam}
                   className="bg-blue-500 text-white px-4 py-2 rounded-md text-sm hover:bg-blue-600 transition-colors font-semibold w-full"
@@ -1012,6 +1190,7 @@ export default function TournamentPage() {
                     <li key={team.id} className="py-3 flex flex-col sm:flex-row justify-between items-center">
                       <span className="font-semibold text-gray-900 dark:text-white text-base sm:text-lg mb-2 sm:mb-0">
                         {team.name}
+                        {team.group && <span className="ml-2 text-gray-500 dark:text-gray-400 text-sm">({team.group})</span>}
                       </span>
                       {(!isViewOnly && isOwner) && (
                         <button
@@ -1153,7 +1332,7 @@ export default function TournamentPage() {
         message={modalMessage}
         showConfirmButton={modalShowConfirmButton}
       >
-        {/* Render custom content (e.g., score input fields) inside the modal */}
+        {/* Render custom content (e.e., score input fields) inside the modal */}
         {modalContent}
       </Modal>
     </div>

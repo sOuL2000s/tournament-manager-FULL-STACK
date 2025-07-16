@@ -30,7 +30,7 @@ Thumbs.db
 
 --- END FILE: .gitignore ---
 
---- START FILE: combine_project.py ---
+--- START FILE: combined.py ---
 
 import os
 
@@ -92,7 +92,7 @@ if __name__ == "__main__":
     combine_files_to_single_file(project_root)
 
 
---- END FILE: combine_project.py ---
+--- END FILE: combined.py ---
 
 --- START FILE: index.html ---
 
@@ -154,7 +154,6 @@ if __name__ == "__main__":
     "vite": "^5.2.8"
   }
 }
-
 
 --- END FILE: package.json ---
 
@@ -696,7 +695,6 @@ export default function LanguageSwitcher({ lang, setLang }) {
     </select>
   );
 }
-
 
 --- END FILE: src\components\LanguageSwitcher.jsx ---
 
@@ -5426,3 +5424,7 @@ export const getStrengthColor = (strength) => {
 };
 
 --- END FILE: src\utils\passwordStrength.js ---
+
+----------------------------------------------------------------------------------------
+
+tell me exactly waht to edit and what code snippet to add in their place for inlcuding a new tournament format? the new tournament format is multi phase tournament where group stage will be there and after group stage knockout stage will be there(round of 16, quarter finals, semi finals, final), this format will also have the option of single match or double match(home and away), just like the league round robin format every functionality will be there, except the difference in format.

@@ -1,19 +1,23 @@
+// src/pages/KnockoutPage.jsx
 import React, { useEffect, useState, useCallback, useRef } from 'react';
-import { useParams, Link } from 'react-router-dom';
+import { useParams, Link, useSearchParams } from 'react-router-dom';
 import { db } from '../firebase';
-import { doc, getDoc, collection, addDoc, query, orderBy, onSnapshot, updateDoc, deleteDoc } from 'firebase/firestore';
+import { doc, getDoc, collection, addDoc, query, orderBy, onSnapshot, updateDoc, deleteDoc, writeBatch, getDocs } from 'firebase/firestore';
 import { useAuth } from '../hooks/useAuth';
 import Modal from '../components/Modal'; // Assuming you have a Modal component
 import ScoreInputModalContent from '../components/ScoreInputModalContent'; // Import the new component
 
 export default function KnockoutPage({ readOnly = false }) {
     const { id: tournamentId } = useParams();
+    const [searchParams] = useSearchParams();
+    const shareId = searchParams.get('shareId');
     const { user, loading: authLoading } = useAuth();
     const [tournamentName, setTournamentName] = useState('Loading...');
     const [matches, setMatches] = useState([]); // Renamed from 'rounds' to 'matches' for clarity
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState(null);
     const [tournamentOwnerId, setTournamentOwnerId] = useState(null);
+    const [tournamentDetails, setTournamentDetails] = useState(null); // New state for tournament details
 
     const [isAddingMatch, setIsAddingMatch] = useState(false);
     const [newMatch, setNewMatch] = useState({
@@ -31,8 +35,14 @@ export default function KnockoutPage({ readOnly = false }) {
     const [modalMessage, setModalMessage] = useState('');
     const [modalShowConfirmButton, setModalShowConfirmButton] = useState(true);
     const [modalContent, setModalContent] = useState(null);
-    const [modalConfirmAction, setModalConfirmAction] = useState(null); // <--- Added this line
+    const [modalConfirmAction, setModalConfirmAction] = useState(null);
     const scoreInputRef = useRef(null);
+
+    const [teams, setTeams] = useState([]); // New state to fetch all teams for selection
+    const [qualifyingTeams, setQualifyingTeams] = useState([]); // State for selected qualifying teams
+    const [showQualifyingTeamsModal, setShowQualifyingTeamsModal] = useState(false);
+    const [numQualifiers, setNumQualifiers] = useState(8); // Default for Quarter-Finals
+
 
     const openModal = useCallback((title, message, showConfirm, content = null, confirmAction = null) => {
         setModalTitle(title);
@@ -53,7 +63,7 @@ export default function KnockoutPage({ readOnly = false }) {
     }, []);
 
     // Determine if the current user has view-only access
-    const isViewOnly = readOnly || (user && tournamentOwnerId && user.uid !== tournamentOwnerId);
+    const isViewOnly = readOnly || (!!shareId) || (user && tournamentOwnerId && user.uid !== tournamentOwnerId);
 
     useEffect(() => {
         const fetchData = async () => {
@@ -66,7 +76,7 @@ export default function KnockoutPage({ readOnly = false }) {
             }
 
             try {
-                // Fetch tournament details to get name and owner ID
+                // Fetch tournament details to get name, owner ID, and type
                 const tournamentDocRef = doc(db, 'tournaments', tournamentId);
                 const tournamentSnap = await getDoc(tournamentDocRef);
 
@@ -74,11 +84,7 @@ export default function KnockoutPage({ readOnly = false }) {
                     const data = tournamentSnap.data();
                     setTournamentName(data.name);
                     setTournamentOwnerId(data.userId);
-
-                    // If not readOnly and current user is not the owner, set an error
-                    if (!readOnly && user && data.userId !== user.uid) {
-                        setError("You do not have permission to modify this tournament.");
-                    }
+                    setTournamentDetails(data); // Store full tournament details
                 } else {
                     setError("Tournament not found.");
                     setLoading(false);
@@ -106,7 +112,18 @@ export default function KnockoutPage({ readOnly = false }) {
                     setLoading(false);
                 });
 
-                return () => unsubscribe(); // Cleanup listener on unmount
+                // Set up real-time listener for teams to populate dropdowns
+                const teamsCollectionRef = collection(db, `tournaments/${tournamentId}/teams`);
+                const unsubscribeTeams = onSnapshot(query(teamsCollectionRef, orderBy('name', 'asc')), (snapshot) => {
+                    setTeams(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() })));
+                }, (err) => {
+                    console.error('Real-time listener error for teams:', err);
+                });
+
+                return () => {
+                    unsubscribe(); // Cleanup knockout matches listener
+                    unsubscribeTeams(); // Cleanup teams listener
+                };
 
             } catch (err) {
                 console.error("Error fetching tournament data:", err);
@@ -116,7 +133,7 @@ export default function KnockoutPage({ readOnly = false }) {
         };
 
         fetchData();
-    }, [tournamentId, user, authLoading, readOnly]);
+    }, [tournamentId, user, authLoading, readOnly, shareId]);
 
 
     // Group matches by round for display
@@ -137,9 +154,80 @@ export default function KnockoutPage({ readOnly = false }) {
         return (order[a] || 99) - (order[b] || 99);
     });
 
+    // Function to generate initial knockout bracket based on selected teams
+    const generateKnockoutBracket = async () => {
+        // Check if tournamentDetails is loaded and if the user is the owner
+        if (!tournamentDetails || isViewOnly || user?.uid !== tournamentOwnerId) {
+            openModal('Access Denied', 'You do not have permission to generate brackets.', false);
+            return;
+        }
+
+        if (qualifyingTeams.length < 2) {
+            openModal('Validation Error', 'Please select at least two qualifying teams.', false);
+            return;
+        }
+
+        const bracketSize = qualifyingTeams.length;
+        if (![2, 4, 8, 16, 32].includes(bracketSize)) {
+            openModal('Validation Error', `Number of qualifying teams must be a power of 2 (e.g., 2, 4, 8, 16, 32). You have ${bracketSize} teams.`, false);
+            return;
+        }
+
+        const rounds = [];
+        if (bracketSize === 2) rounds.push('Final');
+        if (bracketSize === 4) rounds.push('Semi-Finals', 'Final');
+        if (bracketSize === 8) rounds.push('Quarter-Finals', 'Semi-Finals', 'Final');
+        if (bracketSize === 16) rounds.push('Round of 16', 'Quarter-Finals', 'Semi-Finals', 'Final');
+        // Add more rounds as needed for larger brackets
+
+        openModal(
+            'Confirm Bracket Generation',
+            `This will delete ALL existing knockout matches and generate a new ${bracketSize}-team bracket. Are you sure?`,
+            true,
+            null,
+            async () => {
+                try {
+                    const batch = writeBatch(db);
+                    const matchesCollectionRef = collection(db, `tournaments/${tournamentId}/knockoutMatches`);
+
+                    // Delete existing knockout matches
+                    const existingMatchesSnapshot = await getDocs(matchesCollectionRef);
+                    existingMatchesSnapshot.docs.forEach((doc) => {
+                        batch.delete(doc.ref);
+                    });
+
+                    // Shuffle teams to randomize initial pairings
+                    const shuffledTeams = [...qualifyingTeams].sort(() => Math.random() - 0.5);
+
+                    // Create initial round matches (e.g., Quarter-Finals if 8 teams)
+                    const initialRoundName = rounds[0];
+                    for (let i = 0; i < shuffledTeams.length; i += 2) {
+                        const newMatchRef = doc(matchesCollectionRef); // Let Firestore auto-generate ID
+                        batch.set(newMatchRef, {
+                            round: initialRoundName,
+                            teamA: shuffledTeams[i].name,
+                            teamB: shuffledTeams[i + 1].name,
+                            winner: null,
+                            scoreA: null,
+                            scoreB: null,
+                            status: 'scheduled'
+                        });
+                    }
+
+                    await batch.commit();
+                    closeModal();
+                    openModal('Success', `Successfully generated ${bracketSize}-team knockout bracket!`, false);
+                } catch (err) {
+                    console.error('Error generating knockout bracket:', err);
+                    openModal('Error', 'Failed to generate knockout bracket. Please try again.', false);
+                }
+            }
+        );
+    };
+
     // Handle adding a new knockout match
     const handleAddMatch = async () => {
-        if (isViewOnly || user?.uid !== tournamentOwnerId) {
+        if (!tournamentDetails || isViewOnly || user?.uid !== tournamentOwnerId) {
             openModal('Access Denied', 'You do not have permission to add matches.', false);
             return;
         }
@@ -165,7 +253,7 @@ export default function KnockoutPage({ readOnly = false }) {
 
     // Handle updating scores for an existing knockout match
     const handleUpdateScores = useCallback(async (matchToEdit) => {
-        if (isViewOnly || user?.uid !== tournamentOwnerId) {
+        if (!tournamentDetails || isViewOnly || user?.uid !== tournamentOwnerId) {
             openModal('Access Denied', 'You do not have permission to update scores.', false);
             return;
         }
@@ -239,12 +327,12 @@ export default function KnockoutPage({ readOnly = false }) {
             />,
             confirmAction // <--- Pass the confirm action here
         );
-    }, [isViewOnly, user, tournamentOwnerId, openModal, closeModal, tournamentId]);
+    }, [isViewOnly, user, tournamentOwnerId, openModal, closeModal, tournamentId, tournamentDetails]);
 
 
     // Handle deleting a knockout match
     const handleDeleteMatch = async (matchId) => {
-        if (isViewOnly || user?.uid !== tournamentOwnerId) {
+        if (!tournamentDetails || isViewOnly || user?.uid !== tournamentOwnerId) {
             openModal('Access Denied', 'You do not have permission to delete matches.', false);
             return;
         }
@@ -260,7 +348,7 @@ export default function KnockoutPage({ readOnly = false }) {
             }
         };
 
-        openModal('Confirm Delete', 'Are you sure you want to delete this match?', true, null, confirmDeleteAction); // <--- Pass confirmDeleteAction here
+        openModal('Confirm Delete', 'Are you sure you want to delete this match?', true, null, confirmDeleteAction);
     };
 
     const commonNavLinks = (
@@ -273,6 +361,22 @@ export default function KnockoutPage({ readOnly = false }) {
             <Link to={`/tournament/${tournamentId}/ai-prediction`} className="flex-1 text-center py-2 px-1 hover:bg-red-700 transition-colors text-sm sm:text-base">AI PREDICTION</Link>
         </div>
     );
+
+    // Group teams by their assigned group for display in the modal
+    const groupedTeams = teams.reduce((acc, team) => {
+        const group = team.group || 'Ungrouped';
+        if (!acc[group]) {
+            acc[group] = [];
+        }
+        acc[group].push(team);
+        return acc;
+    }, {});
+
+    const sortedGroupNames = Object.keys(groupedTeams).sort((a, b) => {
+        if (a === 'Ungrouped') return 1;
+        if (b === 'Ungrouped') return -1;
+        return a.localeCompare(b);
+    });
 
     if (loading || authLoading) {
         return (
@@ -307,8 +411,24 @@ export default function KnockoutPage({ readOnly = false }) {
                     🏆 Knockout Bracket ({tournamentName})
                 </h2>
 
-                {/* Add New Match Section */}
-                {!isViewOnly && (
+                {/* Tournament Controls */}
+                {tournamentDetails && tournamentDetails.type === 'Multi-Phase' && !isViewOnly && user?.uid === tournamentOwnerId && (
+                    <div className="flex flex-col sm:flex-row justify-center items-center gap-4 mb-6">
+                        <button
+                            onClick={() => setShowQualifyingTeamsModal(true)}
+                            className="bg-purple-600 text-white px-6 py-3 rounded-lg shadow-md hover:bg-purple-700 transition-colors duration-200 font-semibold text-base whitespace-nowrap"
+                        >
+                            Generate Knockout Bracket
+                        </button>
+                        <button
+                            onClick={() => setIsAddingMatch(!isAddingMatch)}
+                            className="bg-blue-600 text-white px-6 py-3 rounded-lg shadow-md hover:bg-blue-700 transition-colors duration-200 font-semibold text-base whitespace-nowrap"
+                        >
+                            {isAddingMatch ? 'Hide Add Match Form' : '➕ Add New Match'}
+                        </button>
+                    </div>
+                )}
+                {tournamentDetails && tournamentDetails.type !== 'Multi-Phase' && !isViewOnly && user?.uid === tournamentOwnerId && (
                     <div className="mb-6 text-center">
                         <button
                             onClick={() => setIsAddingMatch(!isAddingMatch)}
@@ -319,7 +439,8 @@ export default function KnockoutPage({ readOnly = false }) {
                     </div>
                 )}
 
-                {isAddingMatch && !isViewOnly && (
+
+                {isAddingMatch && !isViewOnly && user?.uid === tournamentOwnerId && (
                     <div className="mb-8 p-6 bg-white dark:bg-gray-800 rounded-lg shadow-xl border border-gray-200 dark:border-gray-700 max-w-2xl mx-auto">
                         <h3 className="text-xl font-bold mb-4 text-center">Add New Knockout Match</h3>
                         <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-4">
@@ -371,7 +492,7 @@ export default function KnockoutPage({ readOnly = false }) {
                 {matches.length === 0 ? (
                     <p className="text-center text-gray-500 dark:text-gray-400 text-lg py-10">
                         No knockout matches configured for this tournament yet.
-                        {!isViewOnly && " Use the 'Add New Match' button to create them."}
+                        {!isViewOnly && user?.uid === tournamentOwnerId && " Use the 'Add New Match' button to create them."}
                     </p>
                 ) : (
                     <div className="flex flex-col sm:flex-row justify-center items-start gap-4 md:gap-6 lg:gap-8 p-2">
@@ -403,7 +524,7 @@ export default function KnockoutPage({ readOnly = false }) {
                                                 </p>
                                             )}
 
-                                            {!isViewOnly && (
+                                            {!isViewOnly && user?.uid === tournamentOwnerId && (
                                                 <div className="flex flex-col sm:flex-row gap-2 mt-3 w-full">
                                                     <button
                                                         onClick={() => handleUpdateScores(match)}
@@ -428,10 +549,84 @@ export default function KnockoutPage({ readOnly = false }) {
                 )}
             </div>
 
+            {/* Qualifying Teams Selection Modal */}
+            {showQualifyingTeamsModal && (
+                <Modal
+                    isOpen={showQualifyingTeamsModal}
+                    onClose={() => setShowQualifyingTeamsModal(false)}
+                    onConfirm={generateKnockoutBracket}
+                    title="Select Qualifying Teams"
+                    message={`Select ${numQualifiers} teams to form the initial knockout bracket. (Must be a power of 2: 2, 4, 8, 16, 32)`}
+                    confirmText="Generate Bracket"
+                    showConfirmButton={qualifyingTeams.length === numQualifiers}
+                >
+                    <div className="p-4">
+                        <div className="mb-4">
+                            <label htmlFor="numQualifiers" className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
+                                Number of Qualifiers (e.g., 8 for Quarter-Finals)
+                            </label>
+                            <select
+                                id="numQualifiers"
+                                value={numQualifiers}
+                                onChange={(e) => {
+                                    setNumQualifiers(parseInt(e.target.value));
+                                    setQualifyingTeams([]); // Reset selection when number of qualifiers changes
+                                }}
+                                className="w-full p-2 border border-gray-300 rounded-md shadow-sm dark:bg-gray-700 dark:text-white focus:outline-none focus:ring-2 focus:ring-blue-500"
+                            >
+                                <option value={2}>2 (Final)</option>
+                                <option value={4}>4 (Semi-Finals)</option>
+                                <option value={8}>8 (Quarter-Finals)</option>
+                                <option value={16}>16 (Round of 16)</option>
+                                <option value={32}>32 (Round of 32)</option>
+                            </select>
+                        </div>
+                        <p className="text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
+                            Selected ({qualifyingTeams.length}/{numQualifiers}):
+                        </p>
+                        <div className="max-h-80 overflow-y-auto border p-2 rounded-md bg-gray-50 dark:bg-gray-700">
+                            {sortedGroupNames.map(groupName => (
+                                <div key={groupName} className="mb-4">
+                                    <h4 className="font-bold text-gray-800 dark:text-gray-200 mb-2">
+                                        {groupName !== 'Ungrouped' ? `Group ${groupName}` : 'Ungrouped Teams'}
+                                    </h4>
+                                    <div className="grid grid-cols-2 gap-2">
+                                        {groupedTeams[groupName].map((team) => (
+                                            <label key={team.id} className="flex items-center space-x-2 text-gray-800 dark:text-gray-200">
+                                                <input
+                                                    type="checkbox"
+                                                    checked={qualifyingTeams.some(qt => qt.id === team.id)}
+                                                    onChange={(e) => {
+                                                        if (e.target.checked) {
+                                                            if (qualifyingTeams.length < numQualifiers) {
+                                                                setQualifyingTeams(prev => [...prev, team]);
+                                                            } else {
+                                                                openModal('Selection Limit', `You can only select ${numQualifiers} teams.`, false);
+                                                            }
+                                                        } else {
+                                                            setQualifyingTeams(prev => prev.filter(qt => qt.id !== team.id));
+                                                        }
+                                                    }}
+                                                    className="form-checkbox h-4 w-4 text-blue-600 rounded"
+                                                />
+                                                <span>{team.name}</span>
+                                            </label>
+                                        ))}
+                                    </div>
+                                </div>
+                            ))}
+                        </div>
+                        {qualifyingTeams.length !== numQualifiers && (
+                            <p className="text-red-500 text-sm mt-2">Please select exactly {numQualifiers} teams.</p>
+                        )}
+                    </div>
+                </Modal>
+            )}
+
             <Modal
                 isOpen={modalOpen}
                 onClose={closeModal}
-                onConfirm={modalConfirmAction} // This now correctly points to the state variable
+                onConfirm={modalConfirmAction}
                 title={modalTitle}
                 message={modalMessage}
                 showConfirmButton={modalShowConfirmButton}

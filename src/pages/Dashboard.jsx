@@ -1,3 +1,4 @@
+// src/pages/Dashboard.jsx
 import React, { useState, useEffect } from 'react';
 import { Link, useParams, useLocation } from 'react-router-dom';
 import { db } from '../firebase';
@@ -256,6 +257,7 @@ export default function Dashboard() {
                 >
                   <option value="League">League</option>
                   <option value="Knockout">Knockout</option>
+                  <option value="Multi-Phase">Multi-Phase Tournament</option>
                 </select>
               </div>
               {createError && <p className="text-red-500 text-sm text-center">{createError}</p>}
