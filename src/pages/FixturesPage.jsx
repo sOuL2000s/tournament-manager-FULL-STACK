@@ -14,6 +14,7 @@ import {
   getDocs,
   serverTimestamp,
   getDoc, // Added getDoc
+  where, // Added where for filtering by group
 } from 'firebase/firestore';
 import { db } from '../firebase';
 import { useAuth } from '../hooks/useAuth';
@@ -99,12 +100,12 @@ export default function FixturesPage() {
           const data = docSnap.data();
           setTournamentDetails(data);
           setTournamentOwnerId(data.userId);
-          // Determine if it's a view-only link
-          if (window.location.pathname.startsWith('/share/')) {
-            setIsViewOnly(true);
-          } else {
-            setIsViewOnly(false);
-          }
+          // Determine if it's a view-only link (assuming shareId is in URL)
+          const urlParams = new URLSearchParams(window.location.search);
+          const shareIdParam = urlParams.get('shareId');
+          // If shareId is present, OR if user is not logged in AND tournament is public
+          const currentIsViewOnly = (!!shareIdParam) || (!user && (data.isPublic || false));
+          setIsViewOnly(currentIsViewOnly);
         } else {
           setError('Tournament not found.');
           setLoading(false);
@@ -118,7 +119,7 @@ export default function FixturesPage() {
     );
 
     return () => unsubscribe();
-  }, [tournamentId, user]);
+  }, [tournamentId, user]); // Added user to dependencies
 
   // Listen to Teams and Fixtures collections
   useEffect(() => {
@@ -133,7 +134,7 @@ export default function FixturesPage() {
       },
       (err) => {
         console.error('Error fetching real-time teams:', err);
-        if (!isViewOnly) {
+        if (!isViewOnly) { // Only show error to owner/editor
           setError('Failed to load teams.');
         }
       }
@@ -155,7 +156,7 @@ export default function FixturesPage() {
       },
       (err) => {
         console.error('Error fetching real-time fixtures:', err);
-        if (!isViewOnly) {
+        if (!isViewOnly) { // Only show error to owner/editor
           setError('Failed to load fixtures.');
         }
         setLoading(false);
@@ -168,15 +169,15 @@ export default function FixturesPage() {
     };
   }, [tournamentId, isViewOnly]);
 
-  // Generate Round Robin Fixtures
-  const generateRoundRobinFixtures = useCallback((teamNames, isHomeAndAway) => {
-    const numTeams = teamNames.length;
+  // Generate Round Robin Fixtures (Modified to accept team objects and group ID)
+  const generateRoundRobinFixtures = useCallback((teamsToSchedule, isHomeAndAway, groupId = '') => {
+    const numTeams = teamsToSchedule.length;
     if (numTeams < 2) return [];
 
-    let teamsForScheduling = [...teamNames];
+    let teamsForScheduling = [...teamsToSchedule];
     // If odd number of teams, add a 'BYE' team
     if (numTeams % 2 !== 0) {
-      teamsForScheduling.push('BYE');
+      teamsForScheduling.push({ name: 'BYE', id: 'BYE' }); // Use object for BYE for consistency
     }
 
     const n = teamsForScheduling.length;
@@ -190,11 +191,11 @@ export default function FixturesPage() {
       const fixedTeam = teamsForScheduling[0];
       const rotatingTeamOppositeFixed = teamsForScheduling[(roundNum + (n - 1)) % (n - 1) + 1] || teamsForScheduling[n - 1]; // Robust indexing
 
-      if (fixedTeam !== 'BYE' && rotatingTeamOppositeFixed !== 'BYE') {
+      if (fixedTeam.name !== 'BYE' && rotatingTeamOppositeFixed.name !== 'BYE') {
         if (roundNum % 2 === 0) {
-          currentRoundFixtures.push({ teamA: fixedTeam, teamB: rotatingTeamOppositeFixed });
+          currentRoundFixtures.push({ teamA: fixedTeam.name, teamB: rotatingTeamOppositeFixed.name });
         } else {
-          currentRoundFixtures.push({ teamA: rotatingTeamOppositeFixed, teamB: fixedTeam });
+          currentRoundFixtures.push({ teamA: rotatingTeamOppositeFixed.name, teamB: fixedTeam.name });
         }
       }
 
@@ -203,11 +204,11 @@ export default function FixturesPage() {
         const team1 = teamsForScheduling[(roundNum + i) % (n - 1) + 1];
         const team2 = teamsForScheduling[(roundNum + n - 1 - i) % (n - 1) + 1];
 
-        if (team1 !== 'BYE' && team2 !== 'BYE') {
+        if (team1.name !== 'BYE' && team2.name !== 'BYE') {
           if (i % 2 === 0) {
-            currentRoundFixtures.push({ teamA: team1, teamB: team2 });
+            currentRoundFixtures.push({ teamA: team1.name, teamB: team2.name });
           } else {
-            currentRoundFixtures.push({ teamA: team2, teamB: team1 });
+            currentRoundFixtures.push({ teamA: team2.name, teamB: team1.name });
           }
         }
       }
@@ -234,6 +235,7 @@ export default function FixturesPage() {
         finalFixturesForDb.push({
           ...fixture,
           weekNumber: weekNumber,
+          groupId: groupId, // Assign fixture to its group
         });
       });
     });
@@ -272,50 +274,53 @@ export default function FixturesPage() {
           console.warn(`Skipping fixture generation for group "${groupName}": Not enough teams.`);
           continue;
         }
-        const teamNamesInGroup = teamsInGroup.map(t => t.name);
-        const groupFixtures = generateRoundRobinFixtures(teamNamesInGroup, isHomeAndAway);
+        const groupFixtures = generateRoundRobinFixtures(teamsInGroup, isHomeAndAway, groupName);
 
-        groupFixtures.forEach(fixture => {
-          allGeneratedFixtures.push({
-            ...fixture,
-            groupId: groupName, // Assign fixture to its group
-            date: currentDate.toISOString().split('T')[0],
-            timestamp: new Date(currentDate),
-            status: 'scheduled',
-            scoreA: 0,
-            scoreB: 0,
-          });
-        });
-        // You might want to advance date per group or per week across all groups
-        // For simplicity, we'll just keep advancing it globally for now.
-        currentDate.setDate(currentDate.getDate() + 7); // Advance date for next group/week
+        allGeneratedFixtures.push(...groupFixtures);
       }
     } else {
-      // Existing logic for League or Knockout type, or Multi-Phase without groups defined
-      const teamNames = teams.map(t => t.name);
-      const generatedFixturesWithWeekNumbers = generateRoundRobinFixtures(teamNames, isHomeAndAway);
-
-      generatedFixturesWithWeekNumbers.forEach(fixture => {
-        allGeneratedFixtures.push({
-          ...fixture,
-          groupId: '', // No group for non-grouped tournaments
-          date: currentDate.toISOString().split('T')[0],
-          timestamp: new Date(currentDate),
-          status: 'scheduled',
-          scoreA: 0,
-          scoreB: 0,
-        });
-      });
+      // Existing logic for League type, or Multi-Phase without groups defined
+      const teamObjects = teams.map(t => ({ name: t.name, id: t.id })); // Pass full team objects
+      const generatedFixturesWithWeekNumbers = generateRoundRobinFixtures(teamObjects, isHomeAndAway, ''); // No group ID for non-grouped
+      allGeneratedFixtures.push(...generatedFixturesWithWeekNumbers);
     }
 
-    if (allGeneratedFixtures.length === 0) {
+    // Sort all fixtures by week number for consistent date assignment
+    allGeneratedFixtures.sort((a, b) => a.weekNumber - b.weekNumber);
+
+    const finalFixturesToSave = [];
+    let currentWeek = 0;
+    allGeneratedFixtures.forEach(fixture => {
+      // Advance date only when moving to a new week
+      if (fixture.weekNumber > currentWeek) {
+        if (currentWeek > 0) { // Don't advance for the first week
+          currentDate.setDate(currentDate.getDate() + 7); // Advance by a week for the next set of fixtures
+        }
+        currentWeek = fixture.weekNumber;
+      }
+
+      finalFixturesToSave.push({
+        teamA: fixture.teamA,
+        teamB: fixture.teamB,
+        date: currentDate.toISOString().split('T')[0],
+        timestamp: new Date(currentDate), // Store as Date object for Firestore
+        status: 'scheduled',
+        scoreA: 0,
+        scoreB: 0,
+        weekNumber: fixture.weekNumber,
+        groupId: fixture.groupId || '', // Include groupId
+      });
+    });
+
+
+    if (finalFixturesToSave.length === 0) {
       openCustomModal('Info', 'No fixtures could be generated. Check your team list, groups, and fixture options.', null, false);
       return;
     }
 
     openCustomModal(
       'Confirm Fixture Generation',
-      `This will delete ALL existing fixtures and generate ${allGeneratedFixtures.length} new ones. Are you sure?`,
+      `This will delete ALL existing fixtures and generate ${finalFixturesToSave.length} new ones. Are you sure?`,
       async () => {
         const batch = writeBatch(db);
         const fixturesCollectionRef = collection(db, `tournaments/${tournamentId}/fixtures`);
@@ -327,7 +332,7 @@ export default function FixturesPage() {
         });
 
         // Add new fixtures
-        allGeneratedFixtures.forEach(fixture => {
+        finalFixturesToSave.forEach(fixture => {
           const newFixtureRef = doc(fixturesCollectionRef); // Let Firestore auto-generate ID
           batch.set(newFixtureRef, fixture);
         });
@@ -335,7 +340,7 @@ export default function FixturesPage() {
         try {
           await batch.commit();
           closeCustomModal();
-          openCustomModal('Success', `Successfully generated ${allGeneratedFixtures.length} fixtures!`, null, false);
+          openCustomModal('Success', `Successfully generated ${finalFixturesToSave.length} fixtures!`, null, false);
           // Optionally, trigger a leaderboard update here if it depends on fixtures
           // For now, assume leaderboard update is handled elsewhere or is reactive to fixture changes
         } catch (err) {
@@ -361,6 +366,7 @@ export default function FixturesPage() {
       setFixtureError('Teams cannot be the same.');
       return;
     }
+    let fixtureGroup = '';
     // For multi-phase, ensure teams selected are from the same group if groups exist
     if (tournamentDetails?.type === 'Multi-Phase' && tournamentDetails.groups && tournamentDetails.groups.length > 0) {
         const teamAObj = teams.find(t => t.name === newFixture.teamA);
@@ -370,9 +376,7 @@ export default function FixturesPage() {
             setFixtureError('For Multi-Phase tournaments, teams must be from the same group for custom fixtures.');
             return;
         }
-        newFixture.groupId = teamAObj.group; // Assign group ID to the fixture
-    } else {
-        newFixture.groupId = ''; // Clear group ID if not multi-phase or no groups
+        fixtureGroup = teamAObj.group; // Assign group ID to the fixture
     }
 
 
@@ -392,6 +396,7 @@ export default function FixturesPage() {
         scoreB: 0,
         status: 'scheduled', // Default status
         weekNumber: 0, // Manually added fixtures default to week 0, can be updated later if needed
+        groupId: fixtureGroup, // Store the group ID
       });
       setNewFixture({ teamA: '', teamB: '', date: '', timestamp: null, status: 'scheduled', scoreA: 0, scoreB: 0, groupId: '' }); // Reset form
       setFixtureError(''); // Clear any previous errors
@@ -530,7 +535,7 @@ export default function FixturesPage() {
       const sortedWeekNumbers = Object.keys(finalGrouped[groupName]).sort((a, b) => {
         if (a === 'Manual Fixtures') return 1;
         if (b === 'Manual Fixtures') return -1;
-        return parseInt(a.split(' ')[1]) - parseInt(b.split(' ')[1]);
+        return parseInt(a.replace('Week ', '')) - parseInt(b.replace('Week ', ''));
       });
       const sortedWeeksObj = {};
       sortedWeekNumbers.forEach(week => {
@@ -562,11 +567,11 @@ export default function FixturesPage() {
   return (
     <div className="flex flex-col min-h-screen bg-gray-100 dark:bg-gray-900 text-gray-900 dark:text-white">
       {/* Top Navigation Bar */}
-      <div className={`bg-red-600 text-white p-4 font-bold text-lg ${isViewOnly ? 'flex justify-around' : 'grid grid-cols-2 md:flex md:justify-around'}`}>
-        <Link to={isViewOnly ? `/share/${tournamentId}` : `/tournament/${tournamentId}`} className="flex-1 text-center py-2 px-1 hover:bg-red-700 transition-colors">LEAGUE</Link>
-        <Link to={isViewOnly ? `/share/${tournamentId}/fixtures` : `/tournament/${tournamentId}/fixtures`} className="flex-1 text-center py-2 px-1 hover:bg-red-700 transition-colors">FIXTURES</Link>
-        <Link to={isViewOnly ? `/share/${tournamentId}/players` : `/tournament/${tournamentId}/players`} className="flex-1 text-center py-2 px-1 hover:bg-red-700 transition-colors hidden md:block">TOP SCORERS</Link>
-        <Link to={isViewOnly ? `/share/${tournamentId}/knockout` : `/tournament/${tournamentId}/knockout`} className="flex-1 text-center py-2 px-1 hover:bg-red-700 transition-colors hidden md:block">KNOCKOUT</Link>
+      <div className={`bg-red-600 text-white p-4 font-bold text-lg flex flex-wrap justify-around sm:flex-nowrap`}>
+        <Link to={`/tournament/${tournamentId}`} className="flex-1 text-center py-2 px-1 hover:bg-red-700 transition-colors">LEAGUE</Link>
+        <Link to={`/tournament/${tournamentId}/fixtures`} className="flex-1 text-center py-2 px-1 hover:bg-red-700 transition-colors">FIXTURES</Link>
+        <Link to={`/tournament/${tournamentId}/players`} className="flex-1 text-center py-2 px-1 hover:bg-red-700 transition-colors hidden md:block">TOP SCORERS</Link>
+        <Link to={`/tournament/${tournamentId}/knockout`} className="flex-1 text-center py-2 px-1 hover:bg-red-700 transition-colors hidden md:block">KNOCKOUT</Link>
         {/* Add responsive navigation for other pages if needed for small screens */}
       </div>
 

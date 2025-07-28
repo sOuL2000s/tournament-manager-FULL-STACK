@@ -76,6 +76,7 @@ export default function TournamentPage() {
   const [pointsPerWin, setPointsPerWin] = useState(3);
   const [pointsPerDraw, setPointsPerDraw] = useState(1);
   const [shareableLink, setShareableLink] = useState(''); // New state for the share link
+  const [qualifiersPerGroup, setQualifiersPerGroup] = useState(''); // NEW STATE FOR QUALIFIERS PER GROUP
 
   // Helper function to open the custom modal (uses the shared Modal component)
   const openCustomModal = useCallback((title, message, confirmAction = null, showConfirm = true, content = null) => {
@@ -145,6 +146,7 @@ export default function TournamentPage() {
             setPointsPerWin(data.pointsPerWin !== undefined ? data.pointsPerWin : 3);
             setPointsPerDraw(data.pointsPerDraw !== undefined ? data.pointsPerDraw : 1);
             setGroups(data.groups || []); // Load groups
+            setQualifiersPerGroup(data.qualifiersPerGroup !== undefined ? String(data.qualifiersPerGroup) : ''); // LOAD NEW STATE
             setShareableLink(`${window.location.origin}/tournament/${tournamentId}?shareId=${tournamentId}`); // Re-generate for owner to copy
           } else if (currentIsViewOnly) {
             // Read-only access for public viewers (via share link or unauthenticated to public tourney)
@@ -158,6 +160,7 @@ export default function TournamentPage() {
             setPointsPerWin(data.pointsPerWin !== undefined ? data.pointsPerWin : 3);
             setPointsPerDraw(data.pointsPerDraw !== undefined ? data.pointsPerDraw : 1);
             setGroups(data.groups || []); // Load groups for view
+            setQualifiersPerGroup(data.qualifiersPerGroup !== undefined ? String(data.qualifiersPerGroup) : ''); // LOAD NEW STATE
             setShareableLink(''); // No share link to show for viewers
             // No error, as this is expected behavior for view-only.
           } else {
@@ -245,6 +248,7 @@ export default function TournamentPage() {
         teamStats[teamName] = {
           id: teamDoc.id,
           name: teamName,
+          group: teamDoc.data().group || 'Ungrouped', // Include group here
           played: 0,
           wins: 0,
           draws: 0,
@@ -328,12 +332,25 @@ export default function TournamentPage() {
       setGroupError('Group name cannot be empty.');
       return;
     }
-    if (groups.includes(newGroupName.trim())) {
-      setGroupError('A group with this name already exists.');
-      return;
+    // Generate group names as A, B, C... based on the number of groups
+    const numGroups = parseInt(newGroupName.trim());
+    if (isNaN(numGroups) || numGroups <= 0) {
+        setGroupError('Please enter a valid number of groups (e.g., 2, 4).');
+        return;
     }
+    
+    let generatedGroupNames = [];
+    for (let i = 0; i < numGroups; i++) {
+        generatedGroupNames.push(`Group ${String.fromCharCode(65 + i)}`); // A, B, C, ...
+    }
+
+    if (generatedGroupNames.some(g => groups.includes(g))) {
+        setGroupError('Some generated group names already exist. Clear existing groups first or reduce the number.');
+        return;
+    }
+
     try {
-      const updatedGroups = [...groups, newGroupName.trim()];
+      const updatedGroups = [...groups, ...generatedGroupNames]; // Append newly generated groups
       const tournamentRef = doc(db, 'tournaments', tournamentId);
       await updateDoc(tournamentRef, { groups: updatedGroups });
       setGroups(updatedGroups);
@@ -521,6 +538,7 @@ export default function TournamentPage() {
         pointsPerWin: parseInt(pointsPerWin) || 3,
         pointsPerDraw: parseInt(pointsPerDraw) || 1,
         groups: groups, // Save groups to tournament document
+        qualifiersPerGroup: parseInt(qualifiersPerGroup) || 0, // SAVE NEW SETTING
       });
       openCustomModal('Success', 'Tournament settings saved successfully!', null, false);
       setTournamentDetails(prev => ({
@@ -533,6 +551,7 @@ export default function TournamentPage() {
         pointsPerWin: parseInt(pointsPerWin) || 3,
         pointsPerDraw: parseInt(pointsPerDraw) || 1,
         groups: groups, // Update local state for consistency
+        qualifiersPerGroup: parseInt(qualifiersPerGroup) || 0, // Update local state for consistency
       }));
     } catch (err) {
       console.error('Error saving tournament configuration:', err);
@@ -1093,6 +1112,23 @@ export default function TournamentPage() {
                   className="mt-1 block w-full p-2 border border-gray-300 rounded-md shadow-sm dark:bg-gray-700 dark:border-gray-600 dark:text-white"
                 />
               </div>
+              {/* NEW INPUT: Teams to Qualify Per Group */}
+              {tournamentDetails?.type === 'Multi-Phase' && (
+                <div>
+                    <label htmlFor="qualifiersPerGroup" className="block text-sm font-medium text-gray-700 dark:text-gray-300">Teams to Qualify Per Group:</label>
+                    <input
+                        type="number"
+                        id="qualifiersPerGroup"
+                        value={qualifiersPerGroup}
+                        onChange={(e) => setQualifiersPerGroup(e.target.value)}
+                        min="0"
+                        className="mt-1 block w-full p-2 border border-gray-300 rounded-md shadow-sm dark:bg-gray-700 dark:border-gray-600 dark:text-white"
+                    />
+                    <p className="text-xs text-gray-500 dark:text-gray-400 mt-1">
+                        For Multi-Phase tournaments: Number of teams advancing from each group to the knockout stage.
+                    </p>
+                </div>
+              )}
             </div>
             <button
               onClick={handleSaveTournamentSettings}
@@ -1116,7 +1152,7 @@ export default function TournamentPage() {
                         <div className="flex mb-2">
                             <input
                                 type="text"
-                                placeholder="New group name (e.g., Group A)"
+                                placeholder="Number of groups (e.g., 2, 4)"
                                 value={newGroupName}
                                 onChange={(e) => setNewGroupName(e.target.value)}
                                 className="flex-grow p-2 border border-gray-300 rounded-l-md dark:bg-gray-700 dark:border-gray-600 dark:text-white"
@@ -1125,7 +1161,7 @@ export default function TournamentPage() {
                                 onClick={handleAddGroup}
                                 className="bg-blue-500 text-white px-4 py-2 rounded-r-md hover:bg-blue-600 transition-colors"
                             >
-                                Add Group
+                                Add Groups
                             </button>
                         </div>
                         {groupError && <p className="text-red-500 text-sm mb-2">{groupError}</p>}

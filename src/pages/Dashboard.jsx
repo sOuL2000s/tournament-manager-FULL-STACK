@@ -5,6 +5,7 @@ import { db } from '../firebase';
 import { collection, query, where, onSnapshot, addDoc, doc, deleteDoc, serverTimestamp, writeBatch, getDoc } from 'firebase/firestore';
 import { useAuth } from '../hooks/useAuth';
 import { useTournaments } from '../hooks/useTournaments'; // Import the custom hook
+import Modal from '../components/Modal'; // Ensure Modal is imported
 
 export default function Dashboard() {
   const { user, loading: authLoading } = useAuth();
@@ -20,12 +21,11 @@ export default function Dashboard() {
 
   // Modal State for custom actions like delete confirmation or info messages
   const [modalOpen, setModalOpen] = useState(false);
+  const [modalTitle, setModalTitle] = useState(''); // Added title for Modal component
   const [modalMessage, setModalMessage] = useState('');
   const [modalConfirmAction, setModalConfirmAction] = useState(null);
-  const [modalInputRequired, setModalInputRequired] = useState(false);
-  const [modalInputLabel, setModalInputLabel] = useState('');
-  const [modalInputValue, setModalInputValue] = useState('');
-  const [modalCustomContent, setModalCustomContent] = useState(null); // For rendering custom JSX in modal
+  // Removed modalInputRequired, modalInputLabel, modalInputValue, modalCustomContent
+  // as the generic Modal component handles its children dynamically for input/custom content.
 
   // State to manage shared view access
   const [isViewOnly, setIsViewOnly] = useState(false);
@@ -70,30 +70,24 @@ export default function Dashboard() {
   }, [isViewOnly, user, tournamentOwnerId]);
 
   // Handler for opening the custom modal
-  const openCustomModal = (title, message, onConfirm, inputRequired = false, inputLabel = '', customContent = null) => {
+  const openCustomModal = (title, message, onConfirm = null) => {
+    setModalTitle(title); // Set the modal title
     setModalMessage(message);
-    setModalConfirmAction(() => onConfirm);
-    setModalInputRequired(inputRequired);
-    setModalInputLabel(inputLabel);
-    setModalInputValue(''); // Clear previous input
-    setModalCustomContent(customContent);
+    setModalConfirmAction(() => onConfirm); // Use a function to set state with a function
     setModalOpen(true);
   };
 
   // Handler for closing the custom modal
   const closeCustomModal = () => {
     setModalOpen(false);
+    setModalTitle(''); // Clear modal title
     setModalMessage('');
     setModalConfirmAction(null);
-    setModalInputRequired(false);
-    setModalInputLabel('');
-    setModalInputValue('');
-    setModalCustomContent(null);
   };
 
   const handleModalConfirm = () => {
     if (modalConfirmAction) {
-      modalConfirmAction(modalInputValue); // Pass the input value to the confirm action
+      modalConfirmAction();
     }
     closeCustomModal();
   };
@@ -125,7 +119,7 @@ export default function Dashboard() {
   const handleDeleteTournament = (tournamentId, tournamentName) => {
     // Only allow deletion if not in view-only mode AND the user is the owner
     if (isViewOnly || !isOwner) {
-      openCustomModal('Access Denied', 'You do not have permission to delete tournaments in view-only mode.', null, false);
+      openCustomModal('Access Denied', 'You do not have permission to delete tournaments in view-only mode.', null);
       return;
     }
 
@@ -157,10 +151,10 @@ export default function Dashboard() {
             }
           }
 
-          openCustomModal('Success', `Tournament "${tournamentName}" and all its data deleted successfully!`, null, false);
+          openCustomModal('Success', `Tournament "${tournamentName}" and all its data deleted successfully!`, null);
         } catch (err) {
           console.error('Error deleting tournament:', err);
-          openCustomModal('Error', 'Failed to delete tournament. Please try again.', null, false);
+          openCustomModal('Error', 'Failed to delete tournament. Please try again.', null);
         }
       }
     );
@@ -170,11 +164,11 @@ export default function Dashboard() {
     const shareLink = `${window.location.origin}/?shareId=${user.uid}`;
     navigator.clipboard.writeText(shareLink)
       .then(() => {
-        openCustomModal('Link Copied!', 'The shareable link to your dashboard has been copied to your clipboard.', null, false);
+        openCustomModal('Link Copied!', 'The shareable link to your dashboard has been copied to your clipboard.', null);
       })
       .catch((err) => {
         console.error('Failed to copy link:', err);
-        openCustomModal('Error', 'Failed to copy link. Please try manually.', null, false);
+        openCustomModal('Error', 'Failed to copy link. Please try manually.', null);
       });
   };
 
@@ -256,7 +250,7 @@ export default function Dashboard() {
                   className="mt-1 block w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-md shadow-sm focus:outline-none focus:ring-blue-500 focus:border-blue-500 dark:bg-gray-700 dark:text-white" // w-full for responsive select width
                 >
                   <option value="League">League</option>
-                  <option value="Knockout">Knockout</option>
+                  {/* Removed 'Knockout' option */}
                   <option value="Multi-Phase">Multi-Phase Tournament</option>
                 </select>
               </div>
@@ -314,55 +308,15 @@ export default function Dashboard() {
           )}
         </div>
 
-        {/* Custom Modal Component (Inline implementation for Dashboard's specific needs) */}
-        {modalOpen && (
-          <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-4 z-50"> {/* Responsive modal overlay */}
-            <div className="bg-white dark:bg-gray-800 p-6 rounded-lg shadow-xl w-full max-w-sm text-center"> {/* Responsive modal content container */}
-              {/* Conditional rendering for custom content or default message/input */}
-              {modalCustomContent || (
-                <>
-                  <p className="text-lg font-semibold mb-4">{modalMessage}</p>
-                  {modalInputRequired && (
-                    <div className="flex flex-col gap-2 mb-4">
-                      {/* Maps over labels to create multiple inputs if needed. The value and onChange logic handles them as a comma-separated string. */}
-                      {modalInputLabel.split(',').map((label, index) => (
-                        <input
-                          key={index} // Important for React list rendering
-                          type="text" // Can be changed to "number" if input is strictly numeric
-                          placeholder={label.trim()}
-                          // This value logic is for handling multiple inputs with a single state string
-                          value={modalInputValue.split(',')[index] || ''}
-                          onChange={(e) => {
-                            const newValues = modalInputValue.split(',');
-                            newValues[index] = e.target.value;
-                            setModalInputValue(newValues.join(','));
-                          }}
-                          className="w-full px-3 py-2 border rounded-md dark:bg-gray-700 dark:text-white focus:outline-none focus:ring-2 focus:ring-blue-500" // w-full for responsive input width
-                        />
-                      ))}
-                    </div>
-                  )}
-                </>
-              )}
-              <div className="flex justify-center gap-4 mt-4">
-                {modalConfirmAction && (
-                  <button
-                    onClick={handleModalConfirm}
-                    className="bg-blue-600 text-white px-4 py-2 rounded-md hover:bg-blue-700 transition-colors"
-                  >
-                    Confirm
-                  </button>
-                )}
-                <button
-                  onClick={handleModalCancel}
-                  className="bg-gray-400 text-white px-4 py-2 rounded-md hover:bg-gray-500 transition-colors"
-                >
-                  {modalConfirmAction ? 'Cancel' : 'Close'}
-                </button>
-              </div>
-            </div>
-          </div>
-        )}
+        {/* Custom Modal Component (using the shared Modal) */}
+        <Modal
+          isOpen={modalOpen}
+          onClose={handleModalCancel}
+          onConfirm={handleModalConfirm}
+          title={modalTitle}
+          message={modalMessage}
+          showConfirmButton={modalConfirmAction !== null}
+        />
       </div>
     </div>
   );

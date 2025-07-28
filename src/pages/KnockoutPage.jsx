@@ -1,16 +1,16 @@
 // src/pages/KnockoutPage.jsx
-import React, { useEffect, useState, useCallback, useRef } from 'react';
+import React, { useEffect, useState, useCallback, useRef, useMemo } from 'react';
 import { useParams, Link, useSearchParams } from 'react-router-dom';
 import { db } from '../firebase';
-import { doc, getDoc, collection, addDoc, query, orderBy, onSnapshot, updateDoc, deleteDoc, writeBatch, getDocs } from 'firebase/firestore';
+import { doc, getDoc, collection, addDoc, query, orderBy, onSnapshot, updateDoc, deleteDoc, writeBatch, getDocs, where } from 'firebase/firestore';
 import { useAuth } from '../hooks/useAuth';
 import Modal from '../components/Modal'; // Assuming you have a Modal component
 import ScoreInputModalContent from '../components/ScoreInputModalContent'; // Import the new component
 
-export default function KnockoutPage({ readOnly = false }) {
+export default function KnockoutPage() {
     const { id: tournamentId } = useParams();
     const [searchParams] = useSearchParams();
-    const shareId = searchParams.get('shareId');
+    const shareId = searchParams.get('shareId'); // Get the shareId from the URL
     const { user, loading: authLoading } = useAuth();
     const [tournamentName, setTournamentName] = useState('Loading...');
     const [matches, setMatches] = useState([]); // Renamed from 'rounds' to 'matches' for clarity
@@ -39,10 +39,8 @@ export default function KnockoutPage({ readOnly = false }) {
     const scoreInputRef = useRef(null);
 
     const [teams, setTeams] = useState([]); // New state to fetch all teams for selection
-    const [qualifyingTeams, setQualifyingTeams] = useState([]); // State for selected qualifying teams
-    const [showQualifyingTeamsModal, setShowQualifyingTeamsModal] = useState(false);
-    const [numQualifiers, setNumQualifiers] = useState(8); // Default for Quarter-Finals
-
+    // Removed qualifyingTeams state and showQualifyingTeamsModal, numQualifiers
+    // These will now be derived automatically or fetched from group stage winners
 
     const openModal = useCallback((title, message, showConfirm, content = null, confirmAction = null) => {
         setModalTitle(title);
@@ -63,7 +61,11 @@ export default function KnockoutPage({ readOnly = false }) {
     }, []);
 
     // Determine if the current user has view-only access
-    const isViewOnly = readOnly || (!!shareId) || (user && tournamentOwnerId && user.uid !== tournamentOwnerId);
+    const isViewOnly = useMemo(() => {
+        // If shareId is present, OR if user is not logged in AND tournament is public
+        return (!!shareId) || (!user && (tournamentDetails?.isPublic || false));
+    }, [shareId, user, tournamentDetails]);
+
 
     useEffect(() => {
         const fetchData = async () => {
@@ -85,6 +87,7 @@ export default function KnockoutPage({ readOnly = false }) {
                     setTournamentName(data.name);
                     setTournamentOwnerId(data.userId);
                     setTournamentDetails(data); // Store full tournament details
+                    // The isViewOnly state will be re-calculated by its useMemo based on tournamentDetails
                 } else {
                     setError("Tournament not found.");
                     setLoading(false);
@@ -94,7 +97,8 @@ export default function KnockoutPage({ readOnly = false }) {
                 // Set up real-time listener for knockout matches
                 const matchesCollectionRef = collection(db, `tournaments/${tournamentId}/knockoutMatches`);
                 // Order by round (e.g., "Quarter-Finals", "Semi-Finals") and then by teamA name for consistent display
-                const q = query(matchesCollectionRef, orderBy('round', 'asc'), orderBy('teamA', 'asc'));
+                // Ensure 'roundOrder' is properly set in your matches, e.g., 0 for R32, 1 for R16, 2 for QF, 3 for SF, 4 for Final
+                const q = query(matchesCollectionRef, orderBy('roundOrder', 'asc'), orderBy('teamA', 'asc')); 
 
                 const unsubscribe = onSnapshot(q, (snapshot) => {
                     const fetchedMatches = snapshot.docs.map(doc => ({
@@ -133,8 +137,26 @@ export default function KnockoutPage({ readOnly = false }) {
         };
 
         fetchData();
-    }, [tournamentId, user, authLoading, readOnly, shareId]);
+    }, [tournamentId, user, authLoading, shareId, tournamentDetails?.isPublic]);
 
+
+    // Utility to get round name and order based on the number of teams *in that round*
+    // For example, 2 teams for Final, 4 for Semi-Finals (i.e., 2 matches), etc.
+    const getRoundDetails = useCallback((numTeamsInRound) => {
+        if (numTeamsInRound <= 0) return { name: 'Unknown', order: 99 };
+        // The numTeamsInRound refers to the number of *teams* competing in that specific round.
+        // e.g., for 8 teams total, it's Round of 8 (Quarter-Finals).
+        // For 4 teams total, it's Round of 4 (Semi-Finals).
+        // This makes it simpler for calculating the next round based on winners.
+        switch (numTeamsInRound) {
+            case 2: return { name: 'Final', order: 4 };
+            case 4: return { name: 'Semi-Finals', order: 3 };
+            case 8: return { name: 'Quarter-Finals', order: 2 };
+            case 16: return { name: 'Round of 16', order: 1 };
+            case 32: return { name: 'Round of 32', order: 0 };
+            default: return { name: `Round of ${numTeamsInRound}`, order: 99 };
+        }
+    }, []);
 
     // Group matches by round for display
     const groupedRounds = matches.reduce((acc, match) => {
@@ -146,43 +168,110 @@ export default function KnockoutPage({ readOnly = false }) {
         return acc;
     }, {});
 
-    // Sort round names for consistent display order (e.g., Quarter-Finals, Semi-Finals, Final)
+    // Sort round names for consistent display order
     const sortedRoundNames = Object.keys(groupedRounds).sort((a, b) => {
-        const order = {
-            'Round of 16': 1, 'Quarter-Finals': 2, 'Semi-Finals': 3, 'Final': 4, 'Winner': 5
-        };
-        return (order[a] || 99) - (order[b] || 99);
+        // Find the order of the *current round* based on how many matches are in it.
+        // The length of the array `groupedRounds[a]` gives the number of matches in that round.
+        // Each match involves 2 teams, so `length * 2` gives the total teams that started that round.
+        const orderA = getRoundDetails(groupedRounds[a].length * 2).order;
+        const orderB = getRoundDetails(groupedRounds[b].length * 2).order;
+        return orderA - orderB;
     });
 
-    // Function to generate initial knockout bracket based on selected teams
-    const generateKnockoutBracket = async () => {
-        // Check if tournamentDetails is loaded and if the user is the owner
+    // New function to automatically determine qualifying teams and generate the initial bracket
+    const generateAutomaticInitialBracket = async () => {
         if (!tournamentDetails || isViewOnly || user?.uid !== tournamentOwnerId) {
             openModal('Access Denied', 'You do not have permission to generate brackets.', false);
             return;
         }
 
-        if (qualifyingTeams.length < 2) {
-            openModal('Validation Error', 'Please select at least two qualifying teams.', false);
+        if (tournamentDetails.type !== 'Multi-Phase') {
+            openModal('Not a Multi-Phase Tournament', 'Automatic bracket generation is only available for Multi-Phase tournaments.', false);
+            return;
+        }
+        
+        const numQualifiersPerGroup = tournamentDetails.qualifiersPerGroup || 0;
+        const definedGroups = tournamentDetails.groups || [];
+
+        if (numQualifiersPerGroup <= 0) {
+            openModal('Invalid Qualifiers Setting', 'Please set the "Teams to Qualify Per Group" in Tournament Settings to a number greater than 0.', false);
             return;
         }
 
-        const bracketSize = qualifyingTeams.length;
+        if (definedGroups.length === 0) {
+            openModal('Missing Groups', 'No groups defined for this Multi-Phase tournament. Please define groups (e.g., Group A, Group B) in Tournament Settings first.', false);
+            return;
+        }
+
+        const qualifiedTeamsFromGroups = [];
+        let hasUncompletedGroupFixtures = false;
+
+        for (const groupName of definedGroups) {
+            // Fetch leaderboard data for this specific group
+            const leaderboardQuery = query(
+                collection(db, `tournaments/${tournamentId}/leaderboard`),
+                where('group', '==', groupName), // Assuming leaderboard docs have a 'group' field
+                orderBy('points', 'desc'),
+                orderBy('goalDifference', 'desc'),
+                orderBy('goalsFor', 'desc')
+            );
+            const leaderboardSnap = await getDocs(leaderboardQuery);
+            const groupStandings = leaderboardSnap.docs.map(doc => doc.data());
+
+            // Check if all fixtures for this group are completed
+            const groupFixturesQuery = query(
+                collection(db, `tournaments/${tournamentId}/fixtures`),
+                where('groupId', '==', groupName)
+            );
+            const groupFixturesSnap = await getDocs(groupFixturesQuery);
+            const allGroupFixtures = groupFixturesSnap.docs.map(doc => doc.data());
+            const completedGroupFixtures = allGroupFixtures.filter(f => f.status === 'completed');
+
+            if (completedGroupFixtures.length < allGroupFixtures.length) {
+                hasUncompletedGroupFixtures = true;
+                break; // Exit early if any group has uncompleted fixtures
+            }
+
+
+            // Take top N from each group
+            const topTeamsInGroup = groupStandings.slice(0, numQualifiersPerGroup);
+            if (topTeamsInGroup.length < numQualifiersPerGroup) {
+                 openModal('Not Enough Qualified Teams', `Group "${groupName}" does not have enough teams or completed matches to qualify ${numQualifiersPerGroup} teams. Ensure all group matches are played and enough teams are present.`, false);
+                 return;
+            }
+            qualifiedTeamsFromGroups.push(...topTeamsInGroup.map(team => ({ id: team.id, name: team.name })));
+        }
+
+        if (hasUncompletedGroupFixtures) {
+            openModal('Uncompleted Group Fixtures', 'Some group stage matches are not yet completed. Please complete all group stage fixtures before generating the knockout bracket.', false);
+            return;
+        }
+
+
+        if (qualifiedTeamsFromGroups.length < 2) {
+            openModal('Not Enough Qualifiers', 'Not enough teams qualified from the group stage to generate a bracket. Ensure teams have completed matches in groups and your qualification settings are correct.', false);
+            return;
+        }
+
+        const bracketSize = qualifiedTeamsFromGroups.length;
         if (![2, 4, 8, 16, 32].includes(bracketSize)) {
-            openModal('Validation Error', `Number of qualifying teams must be a power of 2 (e.g., 2, 4, 8, 16, 32). You have ${bracketSize} teams.`, false);
+            openModal('Invalid Qualification Count', `The total number of qualified teams (${bracketSize}) is not a valid bracket size (2, 4, 8, 16, 32). Please adjust your "Teams to Qualify Per Group" setting or the number of groups to form a valid bracket.`, false);
             return;
         }
 
-        const rounds = [];
-        if (bracketSize === 2) rounds.push('Final');
-        if (bracketSize === 4) rounds.push('Semi-Finals', 'Final');
-        if (bracketSize === 8) rounds.push('Quarter-Finals', 'Semi-Finals', 'Final');
-        if (bracketSize === 16) rounds.push('Round of 16', 'Quarter-Finals', 'Semi-Finals', 'Final');
-        // Add more rounds as needed for larger brackets
+        const initialRoundDetails = getRoundDetails(bracketSize);
+        // Check if knockout matches already exist (to prevent re-generating if not needed)
+        const existingKnockoutMatchesQuery = query(collection(db, `tournaments/${tournamentId}/knockoutMatches`));
+        const existingKnockoutMatchesSnap = await getDocs(existingKnockoutMatchesQuery);
+        if (!existingKnockoutMatchesSnap.empty) {
+            openModal('Bracket Already Exists', 'A knockout bracket already exists. If you wish to re-generate, please delete existing knockout matches manually first.', false);
+            return;
+        }
+
 
         openModal(
-            'Confirm Bracket Generation',
-            `This will delete ALL existing knockout matches and generate a new ${bracketSize}-team bracket. Are you sure?`,
+            'Confirm Automatic Bracket Generation',
+            `This will generate a new ${bracketSize}-team knockout bracket starting with ${initialRoundDetails.name} based on the top ${numQualifiersPerGroup} teams from each group. Are you sure?`,
             true,
             null,
             async () => {
@@ -190,21 +279,15 @@ export default function KnockoutPage({ readOnly = false }) {
                     const batch = writeBatch(db);
                     const matchesCollectionRef = collection(db, `tournaments/${tournamentId}/knockoutMatches`);
 
-                    // Delete existing knockout matches
-                    const existingMatchesSnapshot = await getDocs(matchesCollectionRef);
-                    existingMatchesSnapshot.docs.forEach((doc) => {
-                        batch.delete(doc.ref);
-                    });
-
                     // Shuffle teams to randomize initial pairings
-                    const shuffledTeams = [...qualifyingTeams].sort(() => Math.random() - 0.5);
+                    const shuffledTeams = [...qualifiedTeamsFromGroups].sort(() => Math.random() - 0.5);
 
-                    // Create initial round matches (e.g., Quarter-Finals if 8 teams)
-                    const initialRoundName = rounds[0];
+                    // Create initial round matches
                     for (let i = 0; i < shuffledTeams.length; i += 2) {
                         const newMatchRef = doc(matchesCollectionRef); // Let Firestore auto-generate ID
                         batch.set(newMatchRef, {
-                            round: initialRoundName,
+                            round: initialRoundDetails.name,
+                            roundOrder: initialRoundDetails.order,
                             teamA: shuffledTeams[i].name,
                             teamB: shuffledTeams[i + 1].name,
                             winner: null,
@@ -216,16 +299,17 @@ export default function KnockoutPage({ readOnly = false }) {
 
                     await batch.commit();
                     closeModal();
-                    openModal('Success', `Successfully generated ${bracketSize}-team knockout bracket!`, false);
+                    openModal('Success', `Successfully generated ${bracketSize}-team knockout bracket automatically!`, false);
                 } catch (err) {
-                    console.error('Error generating knockout bracket:', err);
-                    openModal('Error', 'Failed to generate knockout bracket. Please try again.', false);
+                    console.error('Error generating automatic knockout bracket:', err);
+                    openModal('Error', 'Failed to generate automatic knockout bracket. Please try again.', false);
                 }
             }
         );
     };
 
-    // Handle adding a new knockout match
+
+    // Handle adding a new knockout match (for manual entry)
     const handleAddMatch = async () => {
         if (!tournamentDetails || isViewOnly || user?.uid !== tournamentOwnerId) {
             openModal('Access Denied', 'You do not have permission to add matches.', false);
@@ -235,10 +319,14 @@ export default function KnockoutPage({ readOnly = false }) {
             openModal('Validation Error', 'Please fill in all match details.', false);
             return;
         }
+        // Assign a dummy round order for manual matches, or ask user for it
+        // For simplicity, let's assign a very high order so they appear last or outside the main flow
+        const manualRoundOrder = 100; 
         try {
             await addDoc(collection(db, `tournaments/${tournamentId}/knockoutMatches`), {
                 ...newMatch,
-                scoreA: null, // Ensure scores are saved as null initially
+                roundOrder: manualRoundOrder, 
+                scoreA: null, 
                 scoreB: null,
                 status: 'scheduled'
             });
@@ -289,6 +377,8 @@ export default function KnockoutPage({ readOnly = false }) {
                 winner = matchToEdit.teamB;
             } else {
                 winner = 'Draw'; // Or handle tie-breaker for knockouts
+                openModal('Draw in Knockout', 'A draw is not typically allowed in knockout matches. Please ensure one team is declared a winner (e.g., via penalty shootout).', false);
+                return;
             }
 
             try {
@@ -351,14 +441,108 @@ export default function KnockoutPage({ readOnly = false }) {
         openModal('Confirm Delete', 'Are you sure you want to delete this match?', true, null, confirmDeleteAction);
     };
 
+    // New: Seed Next Round Functionality
+    const handleSeedNextRound = async () => {
+        if (!tournamentDetails || isViewOnly || user?.uid !== tournamentOwnerId) {
+            openModal('Access Denied', 'You do not have permission to seed the next round.', false);
+            return;
+        }
+
+        // Find the latest completed round
+        const completedMatches = matches.filter(m => m.status === 'completed' && m.winner !== null && m.winner !== 'Draw');
+        if (completedMatches.length === 0) {
+            openModal('No Completed Matches', 'No matches have been completed to seed the next round. Complete matches in the current round first.', false);
+            return;
+        }
+
+        // Group completed matches by round to find the latest round
+        const completedMatchesByRound = completedMatches.reduce((acc, match) => {
+            if (!acc[match.roundOrder]) {
+                acc[match.roundOrder] = [];
+            }
+            acc[match.roundOrder].push(match);
+            return acc;
+        }, {});
+
+        const sortedCompletedRoundOrders = Object.keys(completedMatchesByRound).map(Number).sort((a, b) => a - b);
+        const latestCompletedRoundOrder = sortedCompletedRoundOrders[sortedCompletedRoundOrders.length - 1];
+        const matchesInLatestRound = completedMatchesByRound[latestCompletedRoundOrder];
+
+        if (matchesInLatestRound.length % 2 !== 0) {
+            openModal('Invalid Round State', 'The number of winners in the last round is odd. Cannot seed next round.', false);
+            return;
+        }
+
+        const winners = matchesInLatestRound.map(m => m.winner).filter(Boolean);
+        if (winners.length === 0) {
+            openModal('No Winners', 'No winners found in the latest completed round to seed the next round.', false);
+            return;
+        }
+        
+        // Check if the next round already has matches for these winners.
+        // This is important to prevent duplicate seeding.
+        // Get details of the next round.
+        const nextRoundOrder = latestCompletedRoundOrder + 1;
+        const nextRoundDetails = getRoundDetails(winners.length); // Calculate based on winners count
+        const nextRoundName = nextRoundDetails.name;
+
+        // Check if matches for the next round (with current winners) already exist.
+        const existingNextRoundMatchesQuery = query(
+            collection(db, `tournaments/${tournamentId}/knockoutMatches`),
+            where('roundOrder', '==', nextRoundOrder)
+        );
+        const existingNextRoundMatchesSnap = await getDocs(existingNextRoundMatchesQuery);
+        if (!existingNextRoundMatchesSnap.empty) {
+             openModal('Next Round Already Seeded', `Matches for the "${nextRoundName}" round already exist.`, false);
+             return;
+        }
+
+
+        openModal(
+            'Confirm Seed Next Round',
+            `This will create new matches for the "${nextRoundName}" round based on winners from the previous round. Are you sure?`,
+            true,
+            null,
+            async () => {
+                try {
+                    const batch = writeBatch(db);
+                    const matchesCollectionRef = collection(db, `tournaments/${tournamentId}/knockoutMatches`);
+
+                    const shuffledWinners = [...winners].sort(() => Math.random() - 0.5); // Randomize pairings for next round
+
+                    for (let i = 0; i < shuffledWinners.length; i += 2) {
+                        const newMatchRef = doc(matchesCollectionRef);
+                        batch.set(newMatchRef, {
+                            round: nextRoundName,
+                            roundOrder: nextRoundOrder,
+                            teamA: shuffledWinners[i],
+                            teamB: shuffledWinners[i + 1],
+                            winner: null,
+                            scoreA: null,
+                            scoreB: null,
+                            status: 'scheduled'
+                        });
+                    }
+
+                    await batch.commit();
+                    closeModal();
+                    openModal('Success', `Successfully seeded ${shuffledWinners.length / 2} matches for the ${nextRoundName} round!`, false);
+                } catch (err) {
+                    console.error('Error seeding next round:', err);
+                    openModal('Error', 'Failed to seed next round. Please try again.', false);
+                }
+            }
+        );
+    };
+
     const commonNavLinks = (
         <div className="bg-red-600 text-white p-4 font-bold text-lg flex flex-wrap justify-around sm:flex-nowrap">
-            <Link to={`/tournament/${tournamentId}`} className="flex-1 text-center py-2 px-1 hover:bg-red-700 transition-colors text-sm sm:text-base">LEAGUE</Link>
-            <Link to={`/tournament/${tournamentId}/fixtures`} className="flex-1 text-center py-2 px-1 hover:bg-red-700 transition-colors text-sm sm:text-base">FIXTURES</Link>
-            <Link to={`/tournament/${tournamentId}/players`} className="flex-1 text-center py-2 px-1 hover:bg-red-700 transition-colors text-sm sm:text-base">TOP SCORERS</Link>
-            <Link to={`/tournament/${tournamentId}/stats`} className="flex-1 text-center py-2 px-1 hover:bg-red-700 transition-colors text-sm sm:text-base">STATS</Link>
-            <Link to={`/tournament/${tournamentId}/knockout`} className="flex-1 text-center py-2 px-1 hover:bg-red-700 transition-colors text-sm sm:text-base">KNOCKOUT</Link>
-            <Link to={`/tournament/${tournamentId}/ai-prediction`} className="flex-1 text-center py-2 px-1 hover:bg-red-700 transition-colors text-sm sm:text-base">AI PREDICTION</Link>
+            <Link to={isViewOnly ? `/tournament/${tournamentId}?shareId=${shareId}` : `/tournament/${tournamentId}`} className="flex-1 text-center py-2 px-1 hover:bg-red-700 transition-colors text-sm sm:text-base">LEAGUE</Link>
+            <Link to={isViewOnly ? `/tournament/${tournamentId}/fixtures?shareId=${shareId}` : `/tournament/${tournamentId}/fixtures`} className="flex-1 text-center py-2 px-1 hover:bg-red-700 transition-colors text-sm sm:text-base">FIXTURES</Link>
+            <Link to={isViewOnly ? `/tournament/${tournamentId}/players?shareId=${shareId}` : `/tournament/${tournamentId}/players`} className="flex-1 text-center py-2 px-1 hover:bg-red-700 transition-colors text-sm sm:text-base">TOP SCORERS</Link>
+            <Link to={isViewOnly ? `/tournament/${tournamentId}/stats?shareId=${shareId}` : `/tournament/${tournamentId}/stats`} className="flex-1 text-center py-2 px-1 hover:bg-red-700 transition-colors text-sm sm:text-base">STATS</Link>
+            <Link to={isViewOnly ? `/tournament/${tournamentId}/knockout?shareId=${shareId}` : `/tournament/${tournamentId}/knockout`} className="flex-1 text-center py-2 px-1 hover:bg-red-700 transition-colors text-sm sm:text-base">KNOCKOUT</Link>
+            <Link to={isViewOnly ? `/tournament/${tournamentId}/ai-prediction?shareId=${shareId}` : `/tournament/${tournamentId}/ai-prediction`} className="flex-1 text-center py-2 px-1 hover:bg-red-700 transition-colors text-sm sm:text-base">AI PREDICTION</Link>
         </div>
     );
 
@@ -402,6 +586,9 @@ export default function KnockoutPage({ readOnly = false }) {
         );
     }
 
+    // Determine if the current user is the owner
+    const isOwner = user && user.uid === tournamentOwnerId;
+
     return (
         <div className="flex flex-col min-h-screen bg-gray-100 dark:bg-gray-900 text-gray-900 dark:text-white">
             {commonNavLinks}
@@ -411,25 +598,23 @@ export default function KnockoutPage({ readOnly = false }) {
                     🏆 Knockout Bracket ({tournamentName})
                 </h2>
 
-                {/* Tournament Controls */}
-                {tournamentDetails && tournamentDetails.type === 'Multi-Phase' && !isViewOnly && user?.uid === tournamentOwnerId && (
+                {/* Tournament Controls - only show if owner and not view only */}
+                {!isViewOnly && isOwner && (
                     <div className="flex flex-col sm:flex-row justify-center items-center gap-4 mb-6">
+                        {tournamentDetails && tournamentDetails.type === 'Multi-Phase' && (
+                            <button
+                                onClick={generateAutomaticInitialBracket} // Changed to new automatic function
+                                className="bg-purple-600 text-white px-6 py-3 rounded-lg shadow-md hover:bg-purple-700 transition-colors duration-200 font-semibold text-base whitespace-nowrap"
+                            >
+                                Generate Initial Bracket
+                            </button>
+                        )}
                         <button
-                            onClick={() => setShowQualifyingTeamsModal(true)}
-                            className="bg-purple-600 text-white px-6 py-3 rounded-lg shadow-md hover:bg-purple-700 transition-colors duration-200 font-semibold text-base whitespace-nowrap"
+                            onClick={handleSeedNextRound}
+                            className="bg-green-600 text-white px-6 py-3 rounded-lg shadow-md hover:bg-green-700 transition-colors duration-200 font-semibold text-base whitespace-nowrap"
                         >
-                            Generate Knockout Bracket
+                            Seed Next Round
                         </button>
-                        <button
-                            onClick={() => setIsAddingMatch(!isAddingMatch)}
-                            className="bg-blue-600 text-white px-6 py-3 rounded-lg shadow-md hover:bg-blue-700 transition-colors duration-200 font-semibold text-base whitespace-nowrap"
-                        >
-                            {isAddingMatch ? 'Hide Add Match Form' : '➕ Add New Match'}
-                        </button>
-                    </div>
-                )}
-                {tournamentDetails && tournamentDetails.type !== 'Multi-Phase' && !isViewOnly && user?.uid === tournamentOwnerId && (
-                    <div className="mb-6 text-center">
                         <button
                             onClick={() => setIsAddingMatch(!isAddingMatch)}
                             className="bg-blue-600 text-white px-6 py-3 rounded-lg shadow-md hover:bg-blue-700 transition-colors duration-200 font-semibold text-base whitespace-nowrap"
@@ -440,7 +625,7 @@ export default function KnockoutPage({ readOnly = false }) {
                 )}
 
 
-                {isAddingMatch && !isViewOnly && user?.uid === tournamentOwnerId && (
+                {isAddingMatch && !isViewOnly && isOwner && (
                     <div className="mb-8 p-6 bg-white dark:bg-gray-800 rounded-lg shadow-xl border border-gray-200 dark:border-gray-700 max-w-2xl mx-auto">
                         <h3 className="text-xl font-bold mb-4 text-center">Add New Knockout Match</h3>
                         <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-4">
@@ -452,7 +637,7 @@ export default function KnockoutPage({ readOnly = false }) {
                                     placeholder="e.g., Quarter-Finals"
                                     value={newMatch.round}
                                     onChange={e => setNewMatch({ ...newMatch, round: e.target.value })}
-                                    className="w-full p-3 border border-gray-300 rounded-md shadow-sm dark:bg-gray-700 dark:text-white focus:outline-none focus:ring-2 focus:ring-blue-500"
+                                    className="w-full p-3 border border-gray-300 rounded-md shadow-sm dark:bg-gray-700 dark:border-gray-600 dark:text-white focus:outline-none focus:ring-2 focus:ring-blue-500"
                                 />
                             </div>
                             <div>
@@ -463,7 +648,7 @@ export default function KnockoutPage({ readOnly = false }) {
                                     placeholder="Team A Name"
                                     value={newMatch.teamA}
                                     onChange={e => setNewMatch({ ...newMatch, teamA: e.target.value })}
-                                    className="w-full p-3 border border-gray-300 rounded-md shadow-sm dark:bg-gray-700 dark:text-white focus:outline-none focus:ring-2 focus:ring-blue-500"
+                                    className="w-full p-3 border border-gray-300 rounded-md shadow-sm dark:bg-gray-700 dark:border-gray-600 dark:text-white focus:outline-none focus:ring-2 focus:ring-blue-500"
                                 />
                             </div>
                             <div>
@@ -474,7 +659,7 @@ export default function KnockoutPage({ readOnly = false }) {
                                     placeholder="Team B Name"
                                     value={newMatch.teamB}
                                     onChange={e => setNewMatch({ ...newMatch, teamB: e.target.value })}
-                                    className="w-full p-3 border border-gray-300 rounded-md shadow-sm dark:bg-gray-700 dark:text-white focus:outline-none focus:ring-2 focus:ring-blue-500"
+                                    className="w-full p-3 border border-gray-300 rounded-md shadow-sm dark:bg-gray-700 dark:border-gray-600 dark:text-white focus:outline-none focus:ring-2 focus:ring-blue-500"
                                 />
                             </div>
                             <div className="md:col-span-2 flex justify-center">
@@ -492,53 +677,85 @@ export default function KnockoutPage({ readOnly = false }) {
                 {matches.length === 0 ? (
                     <p className="text-center text-gray-500 dark:text-gray-400 text-lg py-10">
                         No knockout matches configured for this tournament yet.
-                        {!isViewOnly && user?.uid === tournamentOwnerId && " Use the 'Add New Match' button to create them."}
+                        {!isViewOnly && isOwner && " Use the 'Generate Initial Bracket' or 'Add New Match' button to create them."}
                     </p>
                 ) : (
-                    <div className="flex flex-col sm:flex-row justify-center items-start gap-4 md:gap-6 lg:gap-8 p-2">
-                        {sortedRoundNames.map((roundName, roundIndex) => (
-                            <div key={roundName} className="flex flex-col items-center flex-shrink-0 w-full sm:w-1/2 md:w-1/3 lg:w-auto min-w-[200px] md:min-w-[250px] max-w-sm">
-                                <h3 className="text-lg sm:text-xl font-semibold mb-4 text-gray-800 dark:text-gray-200 text-center">{roundName}</h3>
-                                <div className="space-y-4 w-full">
-                                    {groupedRounds[roundName].map((match) => (
-                                        <div
-                                            key={match.id}
-                                            className={`bg-white dark:bg-gray-700 p-4 rounded-lg shadow flex flex-col items-center text-center border
-                                                ${match.status === 'completed' ? 'border-green-500' : 'border-gray-300 dark:border-gray-600'}`}
-                                        >
-                                            <div className="w-full">
-                                                <p className="font-medium text-gray-900 dark:text-white break-words text-base sm:text-lg">{match.teamA}</p>
-                                                <p className="text-sm text-gray-600 dark:text-gray-300">vs</p>
-                                                <p className="font-medium text-gray-900 dark:text-white break-words text-base sm:text-lg">{match.teamB}</p>
-                                            </div>
-                                            {match.status === 'completed' && match.scoreA !== null && match.scoreB !== null ? (
-                                                <p className="mt-2 text-xl sm:text-2xl font-bold text-green-600 dark:text-green-400">
-                                                    {match.scoreA} - {match.scoreB}
-                                                </p>
-                                            ) : (
-                                                <p className="mt-2 text-base text-gray-500 dark:text-gray-400">Scheduled</p>
-                                            )}
-                                            {match.winner && match.winner !== 'Draw' && (
-                                                <p className="mt-2 text-sm sm:text-base font-semibold text-blue-600 dark:text-blue-400">
-                                                    Winner: {match.winner}
-                                                </p>
-                                            )}
+                    <div className="flex justify-center items-start gap-4 md:gap-8 lg:gap-12 p-2 relative min-h-[400px]"> {/* Main bracket container, fixed minimum height for layout stability */}
+                        {/* Dynamic bracket rendering with SVG lines */}
+                        {/* We'll use refs to get positions and draw lines in a useEffect */}
+                        <svg className="absolute inset-0 w-full h-full pointer-events-none z-0">
+                            {/* Lines will be rendered here dynamically */}
+                        </svg>
 
-                                            {!isViewOnly && user?.uid === tournamentOwnerId && (
-                                                <div className="flex flex-col sm:flex-row gap-2 mt-3 w-full">
-                                                    <button
-                                                        onClick={() => handleUpdateScores(match)}
-                                                        className="flex-1 bg-yellow-500 text-white px-3 py-2 rounded-md text-sm hover:bg-yellow-600 transition-colors font-semibold"
-                                                    >
-                                                        Update Scores
-                                                    </button>
-                                                    <button
-                                                        onClick={() => handleDeleteMatch(match.id)}
-                                                        className="flex-1 bg-red-500 text-white px-3 py-2 rounded-md text-sm hover:bg-red-600 transition-colors font-semibold"
-                                                    >
-                                                        Delete
-                                                    </button>
-                                                </div>
+                        {sortedRoundNames.map((roundName, roundIndex) => (
+                            <div key={roundName}
+                                className={`flex flex-col items-center flex-shrink-0 min-w-[200px] md:min-w-[250px] `}
+                                style={{ flexBasis: `calc(100% / ${sortedRoundNames.length} - 1rem)` }} // Distribute width evenly
+                            >
+                                <h3 className="text-lg sm:text-xl font-semibold mb-4 text-gray-800 dark:text-gray-200 text-center sticky top-0 bg-gray-100 dark:bg-gray-900 z-10 w-full py-2">
+                                    {roundName}
+                                </h3>
+                                {/* Matches for this round */}
+                                <div className="flex flex-col w-full gap-y-4"> {/* Removed h-full and justify-around, added gap-y */}
+                                    {groupedRounds[roundName].map((match, matchIndex) => (
+                                        <div key={match.id} className="relative flex items-center justify-center">
+                                            {/* Match Box */}
+                                            <div
+                                                className={`flex flex-col items-center text-center p-2 rounded-md border-2 border-gray-400 dark:border-gray-600
+                                                    ${match.status === 'completed' ? 'border-green-500 dark:border-green-500' : ''}
+                                                    bg-white dark:bg-gray-700 shadow-sm transition-colors duration-200 w-full relative z-10`}
+                                                // Add ref to get match box position for SVG lines
+                                                // ref={el => matchRefs.current[`${roundName}-${match.id}`] = el} // Example: Add refs for positions
+                                            >
+                                                <p className="font-medium text-gray-900 dark:text-white text-sm sm:text-base">{match.teamA}</p>
+                                                <div className="w-full border-t border-gray-200 dark:border-gray-500 my-1"></div>
+                                                <p className="font-medium text-gray-900 dark:text-white text-sm sm:text-base">{match.teamB}</p>
+                                                
+                                                {match.status === 'completed' && match.scoreA !== null && match.scoreB !== null ? (
+                                                    <p className="mt-1 text-sm font-bold text-green-600 dark:text-green-400">
+                                                        {match.scoreA} - {match.scoreB}
+                                                    </p>
+                                                ) : (
+                                                    <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">Scheduled</p>
+                                                )}
+                                                {match.winner && match.winner !== 'Draw' && (
+                                                    <p className="mt-1 text-xs font-semibold text-blue-600 dark:text-blue-400">
+                                                        Winner: {match.winner}
+                                                    </p>
+                                                )}
+
+                                                {!isViewOnly && isOwner && (
+                                                    <div className="flex flex-col sm:flex-row gap-1 mt-2 w-full text-xs">
+                                                        <button
+                                                            onClick={() => handleUpdateScores(match)}
+                                                            className="flex-1 bg-yellow-500 text-white px-1 py-1 rounded-sm hover:bg-yellow-600 transition-colors"
+                                                        >
+                                                            Update
+                                                        </button>
+                                                        <button
+                                                            onClick={() => handleDeleteMatch(match.id)}
+                                                            className="flex-1 bg-red-500 text-white px-1 py-1 rounded-sm hover:bg-red-600 transition-colors"
+                                                        >
+                                                            Delete
+                                                        </button>
+                                                    </div>
+                                                )}
+                                            </div>
+                                            {/* End of Match Box */}
+
+                                            {/* Connecting Lines (simplified visual cues) */}
+                                            {/* Horizontal line extending from match to connect visually */}
+                                            {roundIndex < sortedRoundNames.length - 1 && (
+                                                <div className="absolute right-0 w-6 h-0.5 bg-gray-400 dark:bg-gray-500 top-1/2 transform translate-x-full -translate-y-1/2"></div>
+                                            )}
+                                            {/* Vertical line connecting pairs within a round (for R16, QF etc.) */}
+                                            {/* This requires careful positioning and is simplified here */}
+                                            {matchIndex % 2 === 0 && roundIndex < sortedRoundNames.length - 1 && groupedRounds[roundName][matchIndex + 1] && (
+                                                <div className="absolute bottom-[-22px] left-1/2 w-0.5 h-10 bg-gray-400 dark:bg-gray-500 transform -translate-x-1/2"></div>
+                                            )}
+                                            {/* Horizontal line from vertical connector to next match box */}
+                                            {matchIndex % 2 === 0 && roundIndex < sortedRoundNames.length - 1 && groupedRounds[roundName][matchIndex + 1] && (
+                                                <div className="absolute bottom-[-22px] left-1/2 w-8 h-0.5 bg-gray-400 dark:bg-gray-500 transform -translate-x-1/2 translate-x-[calc(50%+4px)]"></div>
                                             )}
                                         </div>
                                     ))}
@@ -548,80 +765,6 @@ export default function KnockoutPage({ readOnly = false }) {
                     </div>
                 )}
             </div>
-
-            {/* Qualifying Teams Selection Modal */}
-            {showQualifyingTeamsModal && (
-                <Modal
-                    isOpen={showQualifyingTeamsModal}
-                    onClose={() => setShowQualifyingTeamsModal(false)}
-                    onConfirm={generateKnockoutBracket}
-                    title="Select Qualifying Teams"
-                    message={`Select ${numQualifiers} teams to form the initial knockout bracket. (Must be a power of 2: 2, 4, 8, 16, 32)`}
-                    confirmText="Generate Bracket"
-                    showConfirmButton={qualifyingTeams.length === numQualifiers}
-                >
-                    <div className="p-4">
-                        <div className="mb-4">
-                            <label htmlFor="numQualifiers" className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
-                                Number of Qualifiers (e.g., 8 for Quarter-Finals)
-                            </label>
-                            <select
-                                id="numQualifiers"
-                                value={numQualifiers}
-                                onChange={(e) => {
-                                    setNumQualifiers(parseInt(e.target.value));
-                                    setQualifyingTeams([]); // Reset selection when number of qualifiers changes
-                                }}
-                                className="w-full p-2 border border-gray-300 rounded-md shadow-sm dark:bg-gray-700 dark:text-white focus:outline-none focus:ring-2 focus:ring-blue-500"
-                            >
-                                <option value={2}>2 (Final)</option>
-                                <option value={4}>4 (Semi-Finals)</option>
-                                <option value={8}>8 (Quarter-Finals)</option>
-                                <option value={16}>16 (Round of 16)</option>
-                                <option value={32}>32 (Round of 32)</option>
-                            </select>
-                        </div>
-                        <p className="text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
-                            Selected ({qualifyingTeams.length}/{numQualifiers}):
-                        </p>
-                        <div className="max-h-80 overflow-y-auto border p-2 rounded-md bg-gray-50 dark:bg-gray-700">
-                            {sortedGroupNames.map(groupName => (
-                                <div key={groupName} className="mb-4">
-                                    <h4 className="font-bold text-gray-800 dark:text-gray-200 mb-2">
-                                        {groupName !== 'Ungrouped' ? `Group ${groupName}` : 'Ungrouped Teams'}
-                                    </h4>
-                                    <div className="grid grid-cols-2 gap-2">
-                                        {groupedTeams[groupName].map((team) => (
-                                            <label key={team.id} className="flex items-center space-x-2 text-gray-800 dark:text-gray-200">
-                                                <input
-                                                    type="checkbox"
-                                                    checked={qualifyingTeams.some(qt => qt.id === team.id)}
-                                                    onChange={(e) => {
-                                                        if (e.target.checked) {
-                                                            if (qualifyingTeams.length < numQualifiers) {
-                                                                setQualifyingTeams(prev => [...prev, team]);
-                                                            } else {
-                                                                openModal('Selection Limit', `You can only select ${numQualifiers} teams.`, false);
-                                                            }
-                                                        } else {
-                                                            setQualifyingTeams(prev => prev.filter(qt => qt.id !== team.id));
-                                                        }
-                                                    }}
-                                                    className="form-checkbox h-4 w-4 text-blue-600 rounded"
-                                                />
-                                                <span>{team.name}</span>
-                                            </label>
-                                        ))}
-                                    </div>
-                                </div>
-                            ))}
-                        </div>
-                        {qualifyingTeams.length !== numQualifiers && (
-                            <p className="text-red-500 text-sm mt-2">Please select exactly {numQualifiers} teams.</p>
-                        )}
-                    </div>
-                </Modal>
-            )}
 
             <Modal
                 isOpen={modalOpen}
