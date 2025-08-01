@@ -3,15 +3,90 @@ import React, { useEffect, useState, useCallback, useRef, useMemo } from 'react'
 import { useParams, Link, useSearchParams } from 'react-router-dom';
 import { db } from '../firebase';
 import { doc, getDoc, collection, addDoc, query, orderBy, onSnapshot, updateDoc, deleteDoc, writeBatch, getDocs, where } from 'firebase/firestore';
-import { useAuth } from '../hooks/useAuth';
-import Modal from '../components/Modal'; // Assuming you have a Modal component
-import ScoreInputModalContent from '../components/ScoreInputModalContent'; // Import the new component
+import { useAuth } from '../hooks/useAuth'; // Assuming useAuth is in this path
 
-export default function KnockoutPage() {
+// --- Helper Components (Defined within the same file for simplicity) ---
+
+// Modal Component
+const Modal = ({ isOpen, onClose, onConfirm, title, message, children, showConfirmButton }) => {
+    if (!isOpen) return null;
+
+    return (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black bg-opacity-50">
+            <div className="bg-white dark:bg-gray-800 rounded-lg shadow-xl p-6 w-11/12 max-w-lg mx-auto transform transition-all duration-300 scale-100 opacity-100">
+                <div className="flex justify-between items-center border-b pb-3 mb-4 border-gray-200 dark:border-gray-700">
+                    <h3 className="text-xl font-bold text-gray-900 dark:text-white">{title}</h3>
+                    <button onClick={onClose} className="text-gray-500 hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-200 text-2xl font-semibold">&times;</button>
+                </div>
+                <div className="text-gray-700 dark:text-gray-300 mb-6">
+                    {message && <p className="mb-4">{message}</p>}
+                    {children}
+                </div>
+                <div className="flex justify-end gap-3">
+                    <button
+                        onClick={onClose}
+                        className="px-4 py-2 bg-gray-200 dark:bg-gray-700 text-gray-800 dark:text-gray-200 rounded-md hover:bg-gray-300 dark:hover:bg-gray-600 transition-colors"
+                    >
+                        Cancel
+                    </button>
+                    {showConfirmButton && onConfirm && (
+                        <button
+                            onClick={onConfirm}
+                            className="px-4 py-2 bg-red-600 text-white rounded-md hover:bg-red-700 transition-colors"
+                        >
+                            Confirm
+                        </button>
+                    )}
+                </div>
+            </div>
+        </div>
+    );
+};
+
+// Score Input Modal Content Component
+const ScoreInputModalContent = React.forwardRef(({ fixture, initialScoreA, initialScoreB }, ref) => {
+    const [scoreA, setScoreA] = useState(initialScoreA ?? '');
+    const [scoreB, setScoreB] = useState(initialScoreB ?? '');
+
+    // Expose methods to parent component via ref
+    React.useImperativeHandle(ref, () => ({
+        getScoreA: () => scoreA,
+        getScoreB: () => scoreB,
+    }));
+
+    return (
+        <div className="flex flex-col gap-4 p-4">
+            <div className="flex items-center justify-between gap-4">
+                <span className="font-semibold text-lg text-gray-900 dark:text-white">{fixture.teamA}</span>
+                <input
+                    type="number"
+                    value={scoreA}
+                    onChange={(e) => setScoreA(e.target.value)}
+                    className="w-20 p-2 border border-gray-300 rounded-md shadow-sm dark:bg-gray-700 dark:border-gray-600 dark:text-white focus:outline-none focus:ring-2 focus:ring-blue-500 text-center text-lg"
+                    min="0"
+                />
+            </div>
+            <div className="flex items-center justify-between gap-4">
+                <span className="font-semibold text-lg text-gray-900 dark:text-white">{fixture.teamB}</span>
+                <input
+                    type="number"
+                    value={scoreB}
+                    onChange={(e) => setScoreB(e.target.value)}
+                    className="w-20 p-2 border border-gray-300 rounded-md shadow-sm dark:bg-gray-700 dark:border-gray-600 dark:text-white focus:outline-none focus:ring-2 focus:ring-blue-500 text-center text-lg"
+                    min="0"
+                />
+            </div>
+        </div>
+    );
+});
+
+
+// --- KnockoutPage Component ---
+const KnockoutPage = () => { // Corrected syntax for component definition
     const { id: tournamentId } = useParams();
     const [searchParams] = useSearchParams();
     const shareId = searchParams.get('shareId'); // Get the shareId from the URL
-    const { user, loading: authLoading } = useAuth();
+    const { user, loading: authLoading } = useAuth(); // Corrected useAuth import
     const [tournamentName, setTournamentName] = useState('Loading...');
     const [matches, setMatches] = useState([]); // Renamed from 'rounds' to 'matches' for clarity
     const [loading, setLoading] = useState(true);
@@ -33,14 +108,17 @@ export default function KnockoutPage() {
     const [modalOpen, setModalOpen] = useState(false);
     const [modalTitle, setModalTitle] = useState('');
     const [modalMessage, setModalMessage] = useState('');
-    const [modalShowConfirmButton, setModalShowConfirmButton] = useState(true);
+    const [modalShowConfirmButton, setModalShowConfirmButton] = useState(true); // Default to true
     const [modalContent, setModalContent] = useState(null);
     const [modalConfirmAction, setModalConfirmAction] = useState(null);
     const scoreInputRef = useRef(null);
 
     const [teams, setTeams] = useState([]); // New state to fetch all teams for selection
-    // Removed qualifyingTeams state and showQualifyingTeamsModal, numQualifiers
-    // These will now be derived automatically or fetched from group stage winners
+
+    // Refs for SVG drawing
+    const matchRefs = useRef(new Map()); // Stores refs for each match box (key: match.id, value: DOM element)
+    const svgContainerRef = useRef(null); // Ref for the div that wraps all round columns, for relative positioning
+    const [svgLines, setSvgLines] = useState([]); // State to store SVG path data
 
     const openModal = useCallback((title, message, showConfirm, content = null, confirmAction = null) => {
         setModalTitle(title);
@@ -159,24 +237,28 @@ export default function KnockoutPage() {
     }, []);
 
     // Group matches by round for display
-    const groupedRounds = matches.reduce((acc, match) => {
-        const roundName = match.round || 'Unnamed Round';
-        if (!acc[roundName]) {
-            acc[roundName] = [];
-        }
-        acc[roundName].push(match);
-        return acc;
-    }, {});
+    const groupedRounds = useMemo(() => {
+        return matches.reduce((acc, match) => {
+            const roundName = match.round || 'Unnamed Round';
+            if (!acc[roundName]) {
+                acc[roundName] = [];
+            }
+            acc[roundName].push(match);
+            return acc;
+        }, {});
+    }, [matches]);
 
     // Sort round names for consistent display order
-    const sortedRoundNames = Object.keys(groupedRounds).sort((a, b) => {
-        // Find the order of the *current round* based on how many matches are in it.
-        // The length of the array `groupedRounds[a]` gives the number of matches in that round.
-        // Each match involves 2 teams, so `length * 2` gives the total teams that started that round.
-        const orderA = getRoundDetails(groupedRounds[a].length * 2).order;
-        const orderB = getRoundDetails(groupedRounds[b].length * 2).order;
-        return orderA - orderB;
-    });
+    const sortedRoundNames = useMemo(() => {
+        return Object.keys(groupedRounds).sort((a, b) => {
+            // Find the order of the *current round* based on how many matches are in it.
+            // The length of the array `groupedRounds[a]` gives the number of matches in that round.
+            // Each match involves 2 teams, so `length * 2` gives the total teams that started that round.
+            const orderA = getRoundDetails(groupedRounds[a].length * 2).order;
+            const orderB = getRoundDetails(groupedRounds[b].length * 2).order;
+            return orderA - orderB;
+        });
+    }, [groupedRounds, getRoundDetails]);
 
     // New function to automatically determine qualifying teams and generate the initial bracket
     const generateAutomaticInitialBracket = async () => {
@@ -331,7 +413,7 @@ export default function KnockoutPage() {
                 status: 'scheduled'
             });
             setNewMatch({ round: '', teamA: '', teamB: '', winner: null, scoreA: null, scoreB: null, status: 'scheduled' });
-            setIsAddingMatch(false);
+            setIsAddingMatch(false); // Hide the form after successful addition
             openModal('Success', 'Match added successfully!', false);
         } catch (err) {
             console.error('Error adding match:', err);
@@ -469,7 +551,7 @@ export default function KnockoutPage() {
         const matchesInLatestRound = completedMatchesByRound[latestCompletedRoundOrder];
 
         if (matchesInLatestRound.length % 2 !== 0) {
-            openModal('Invalid Round State', 'The number of winners in the last round is odd. Cannot seed next round.', false);
+            openModal('Invalid Round State', 'The number of winners in the last round is odd. Cannot seed next round. Ensure all matches in the current round have a winner and there is an even number of winners.', false);
             return;
         }
 
@@ -535,6 +617,167 @@ export default function KnockoutPage() {
         );
     };
 
+    // Function to draw SVG lines that connect the bracket
+    const drawBracketLines = useCallback(() => {
+        const lines = [];
+        if (!svgContainerRef.current) {
+            setSvgLines([]); // Clear lines if container not ready
+            return;
+        }
+
+        const containerRect = svgContainerRef.current.getBoundingClientRect();
+        // Use container's position to make coordinates relative to the SVG.
+        // The SVG is positioned absolutely inside svgContainerRef, so its top-left is (0,0) within that container.
+        const offsetX = containerRect.left;
+        const offsetY = containerRect.top;
+
+        const getMatchRect = (id) => {
+            const el = matchRefs.current.get(id);
+            if (el) {
+                const rect = el.getBoundingClientRect();
+                return {
+                    x: rect.left - offsetX,
+                    y: rect.top - offsetY,
+                    width: rect.width,
+                    height: rect.height,
+                    center_y: (rect.top - offsetY) + (rect.height / 2)
+                };
+            }
+            return null;
+        };
+
+        // Constants for line drawing geometry
+        // These values are tuned for the visual appearance in your screenshot
+        const horizontalSegment1 = 20; // Length of the first horizontal line segment from match box
+        // const horizontalSegment2 = 40; // Length of the horizontal line segment from vertical connector to next box (not directly used for fixed spacing in current drawing logic for next match)
+
+        sortedRoundNames.forEach((roundName, roundIndex) => {
+            const currentRoundMatches = groupedRounds[roundName];
+            
+            // Iterate over pairs of matches in the current round
+            for (let i = 0; i < currentRoundMatches.length; i += 2) {
+                const match1 = currentRoundMatches[i];
+                const match2 = currentRoundMatches[i + 1]; // Can be undefined if odd number of matches
+
+                const rect1 = getMatchRect(match1.id);
+                const rect2 = match2 ? getMatchRect(match2.id) : null;
+
+                // Only draw if at least the first match box is available
+                if (!rect1) continue; 
+
+                // Determine line color based on match status
+                const areBothMatchesCompleted = match1.status === 'completed' && (!match2 || match2.status === 'completed');
+                const lineStrokeColor = areBothMatchesCompleted
+                                        ? '#22C55E' // Green-500 for completed bracket part
+                                        : (document.documentElement.classList.contains('dark') ? '#4B5563' : '#9CA3AF'); // Gray-600 dark / Gray-400 light
+
+                const startX = rect1.x + rect1.width; // Right edge of match1 (and match2 if it exists)
+                const midY1 = rect1.center_y;          // Center Y of match1
+
+                // X-coordinate where the vertical connector will be
+                // It's usually halfway between the end of current box and start of next box's column,
+                // but since the columns are dynamically positioned with flexbox, we can just use a fixed offset.
+                const x_vertical_junction = startX + horizontalSegment1; 
+
+                if (rect2) { // Standard pair of matches (like A vs B, C vs D in your image)
+                    const midY2 = rect2.center_y;          // Center Y of match2
+
+                    const winnerLineY = (midY1 + midY2) / 2; // Center Y for the line representing the winner
+
+                    // Path 1: Horizontal line from match1 to vertical junction
+                    lines.push({ 
+                        d: `M ${startX} ${midY1} H ${x_vertical_junction}`, 
+                        stroke: lineStrokeColor,
+                    });
+
+                    // Path 2: Horizontal line from match2 to vertical junction
+                    lines.push({ 
+                        d: `M ${startX} ${midY2} H ${x_vertical_junction}`, 
+                        stroke: lineStrokeColor,
+                    });
+                    
+                    // Path 3: Vertical line connecting the two horizontal lines
+                    lines.push({ 
+                        d: `M ${x_vertical_junction} ${midY1} V ${midY2}`, 
+                        stroke: lineStrokeColor,
+                    });
+
+                    // Path 4: Line from the midpoint of the vertical connector, extending to the next round's match
+                    // Only draw this if it's not the final round
+                    if (roundIndex < sortedRoundNames.length - 1) {
+                        const nextRoundName = sortedRoundNames[roundIndex + 1];
+                        const nextRoundMatches = groupedRounds[nextRoundName];
+                        const targetMatch = nextRoundMatches ? nextRoundMatches[Math.floor(i / 2)] : null; // The winner of this pair proceeds to this match
+
+                        if (targetMatch) {
+                            const targetRect = getMatchRect(targetMatch.id);
+                            if (targetRect) {
+                                const targetX = targetRect.x; // Left edge of the next match box
+                                lines.push({ 
+                                    d: `M ${x_vertical_junction} ${winnerLineY} H ${targetX}`, 
+                                    stroke: lineStrokeColor,
+                                });
+                            }
+                        } else {
+                            // Fallback: if no target match (e.g., incomplete bracket or uneven matches), extend horizontally
+                            // This scenario might happen if the bracket generation is incomplete or irregular.
+                            lines.push({ 
+                                d: `M ${x_vertical_junction} ${winnerLineY} H ${x_vertical_junction + horizontalSegment1}`, // extend a bit more
+                                stroke: lineStrokeColor,
+                            });
+                        }
+                    } else { // This is the final round, extend winner line
+                        lines.push({ 
+                            d: `M ${x_vertical_junction} ${winnerLineY} H ${x_vertical_junction + horizontalSegment1}`, 
+                            stroke: lineStrokeColor,
+                        });
+                    }
+
+                } else { // This case handles an unpaired match or the single final winner
+                    // If it's the very last match in the whole bracket (the winner of the final)
+                    if (roundIndex === sortedRoundNames.length - 1 && currentRoundMatches.length === 1) {
+                         lines.push({ 
+                            d: `M ${startX} ${midY1} H ${startX + horizontalSegment1}`, // Extend slightly to the right of the last box
+                            stroke: lineStrokeColor,
+                        });
+                    } else {
+                        // For any other unpaired match (shouldn't typically happen in a balanced bracket, but for robustness)
+                        // Or if a match is standalone but not the final winner (e.g., 3rd place playoff)
+                        lines.push({ 
+                            d: `M ${startX} ${midY1} H ${x_vertical_junction + horizontalSegment1}`, 
+                            stroke: lineStrokeColor,
+                        });
+                    }
+                }
+            }
+        });
+        setSvgLines(lines);
+    }, [sortedRoundNames, groupedRounds]);
+
+    // Effect to redraw lines on data change, window resize, or component updates
+    useEffect(() => {
+        // Debounce resize events for performance
+        let resizeTimer;
+        const handleResize = () => {
+            clearTimeout(resizeTimer);
+            resizeTimer = setTimeout(drawBracketLines, 100); // 100ms debounce
+        };
+        
+        window.addEventListener('resize', handleResize);
+
+        // Also run once on mount and when relevant data changes
+        // Use a small delay to ensure DOM elements (match boxes) have rendered and refs are populated
+        // This is crucial for getBoundingClientRect to be accurate.
+        const initialDrawTimer = setTimeout(drawBracketLines, 50); 
+
+        return () => {
+            clearTimeout(resizeTimer); // Clear any pending debounced calls on unmount
+            clearTimeout(initialDrawTimer); // Clear initial draw timer too
+            window.removeEventListener('resize', handleResize);
+        };
+    }, [matches, sortedRoundNames, groupedRounds, drawBracketLines]); // Depend on matches and memoized data for redraws
+
+
     const commonNavLinks = (
         <div className="bg-red-600 text-white p-4 font-bold text-lg flex flex-wrap justify-around sm:flex-nowrap">
             <Link to={isViewOnly ? `/tournament/${tournamentId}?shareId=${shareId}` : `/tournament/${tournamentId}`} className="flex-1 text-center py-2 px-1 hover:bg-red-700 transition-colors text-sm sm:text-base">LEAGUE</Link>
@@ -546,7 +789,7 @@ export default function KnockoutPage() {
         </div>
     );
 
-    // Group teams by their assigned group for display in the modal
+    // Group teams by their assigned group for display in the modal (though not used in this specific KnockoutPage UI)
     const groupedTeams = teams.reduce((acc, team) => {
         const group = team.group || 'Ungrouped';
         if (!acc[group]) {
@@ -627,7 +870,7 @@ export default function KnockoutPage() {
 
                 {isAddingMatch && !isViewOnly && isOwner && (
                     <div className="mb-8 p-6 bg-white dark:bg-gray-800 rounded-lg shadow-xl border border-gray-200 dark:border-gray-700 max-w-2xl mx-auto">
-                        <h3 className="text-xl font-bold mb-4 text-center">Add New Knockout Match</h3>
+                        <h3 className="text-xl font-bold mb-4 text-center text-gray-900 dark:text-white">Add New Knockout Match</h3>
                         <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-4">
                             <div>
                                 <label htmlFor="roundName" className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Round Name</label>
@@ -680,83 +923,87 @@ export default function KnockoutPage() {
                         {!isViewOnly && isOwner && " Use the 'Generate Initial Bracket' or 'Add New Match' button to create them."}
                     </p>
                 ) : (
-                    <div className="flex justify-center items-start gap-4 md:gap-8 lg:gap-12 p-2 relative min-h-[400px]"> {/* Main bracket container, fixed minimum height for layout stability */}
-                        {/* Dynamic bracket rendering with SVG lines */}
-                        {/* We'll use refs to get positions and draw lines in a useEffect */}
+                    <div ref={svgContainerRef} className="relative flex justify-center flex-wrap md:flex-nowrap items-start w-full min-h-[400px]">
+                        {/* SVG Overlay for drawing lines */}
                         <svg className="absolute inset-0 w-full h-full pointer-events-none z-0">
-                            {/* Lines will be rendered here dynamically */}
+                            {svgLines.map((line, index) => (
+                                <path 
+                                    key={index} 
+                                    d={line.d} 
+                                    stroke={line.stroke} 
+                                    strokeWidth="2" 
+                                    fill="none" 
+                                    strokeLinejoin="round" 
+                                    strokeLinecap="round" 
+                                />
+                            ))}
                         </svg>
 
                         {sortedRoundNames.map((roundName, roundIndex) => (
                             <div key={roundName}
-                                className={`flex flex-col items-center flex-shrink-0 min-w-[200px] md:min-w-[250px] `}
-                                style={{ flexBasis: `calc(100% / ${sortedRoundNames.length} - 1rem)` }} // Distribute width evenly
+                                className={`
+                                    round-column flex flex-col items-center flex-shrink-0
+                                    min-w-[250px] md:min-w-[280px] lg:min-w-[320px]
+                                    mx-2 md:mx-4
+                                    py-4
+                                `}
                             >
-                                <h3 className="text-lg sm:text-xl font-semibold mb-4 text-gray-800 dark:text-gray-200 text-center sticky top-0 bg-gray-100 dark:bg-gray-900 z-10 w-full py-2">
+                                <h3 className="text-lg sm:text-xl font-semibold mb-6 text-gray-800 dark:text-gray-200 text-center sticky top-0 bg-inherit z-10 w-full py-2">
                                     {roundName}
                                 </h3>
                                 {/* Matches for this round */}
-                                <div className="flex flex-col w-full gap-y-4"> {/* Removed h-full and justify-around, added gap-y */}
+                                <div className="flex flex-col w-full">
                                     {groupedRounds[roundName].map((match, matchIndex) => (
-                                        <div key={match.id} className="relative flex items-center justify-center">
+                                        <div key={match.id} className="relative w-full mb-6"> {/* Increased mb for spacing between matches */}
                                             {/* Match Box */}
                                             <div
-                                                className={`flex flex-col items-center text-center p-2 rounded-md border-2 border-gray-400 dark:border-gray-600
-                                                    ${match.status === 'completed' ? 'border-green-500 dark:border-green-500' : ''}
-                                                    bg-white dark:bg-gray-700 shadow-sm transition-colors duration-200 w-full relative z-10`}
-                                                // Add ref to get match box position for SVG lines
-                                                // ref={el => matchRefs.current[`${roundName}-${match.id}`] = el} // Example: Add refs for positions
+                                                ref={el => matchRefs.current.set(match.id, el)} // Store ref for SVG drawing
+                                                className={`
+                                                    match-box flex flex-col items-center text-center p-4 rounded-lg shadow-lg border-2
+                                                    ${match.status === 'completed'
+                                                        ? (match.winner && match.winner !== 'Draw' ? 'border-green-500 dark:border-green-500' : 'border-orange-500 dark:border-orange-500')
+                                                        : 'border-gray-400 dark:border-gray-600'
+                                                    }
+                                                    bg-white dark:bg-gray-700 transition-colors duration-200 w-full relative z-10
+                                                `}
                                             >
-                                                <p className="font-medium text-gray-900 dark:text-white text-sm sm:text-base">{match.teamA}</p>
+                                                <p className="font-bold text-gray-900 dark:text-white text-base sm:text-lg mb-1">{match.teamA}</p>
                                                 <div className="w-full border-t border-gray-200 dark:border-gray-500 my-1"></div>
-                                                <p className="font-medium text-gray-900 dark:text-white text-sm sm:text-base">{match.teamB}</p>
+                                                <p className="font-bold text-gray-900 dark:text-white text-base sm:text-lg">{match.teamB}</p>
                                                 
                                                 {match.status === 'completed' && match.scoreA !== null && match.scoreB !== null ? (
-                                                    <p className="mt-1 text-sm font-bold text-green-600 dark:text-green-400">
+                                                    <p className="mt-2 text-xl font-extrabold text-green-700 dark:text-green-300">
                                                         {match.scoreA} - {match.scoreB}
                                                     </p>
                                                 ) : (
-                                                    <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">Scheduled</p>
+                                                    <p className="mt-2 text-base text-yellow-600 dark:text-yellow-400 font-medium">Scheduled</p>
                                                 )}
                                                 {match.winner && match.winner !== 'Draw' && (
-                                                    <p className="mt-1 text-xs font-semibold text-blue-600 dark:text-blue-400">
+                                                    <p className="mt-1 text-sm font-semibold text-blue-700 dark:text-blue-300">
                                                         Winner: {match.winner}
+                                                        {roundIndex === sortedRoundNames.length -1 && (
+                                                            <span className="ml-2 text-yellow-500 text-xl inline-block align-middle">🏆</span> // Trophy for the final winner
+                                                        )}
                                                     </p>
                                                 )}
 
                                                 {!isViewOnly && isOwner && (
-                                                    <div className="flex flex-col sm:flex-row gap-1 mt-2 w-full text-xs">
+                                                    <div className="flex flex-col sm:flex-row gap-2 mt-3 w-full text-sm">
                                                         <button
                                                             onClick={() => handleUpdateScores(match)}
-                                                            className="flex-1 bg-yellow-500 text-white px-1 py-1 rounded-sm hover:bg-yellow-600 transition-colors"
+                                                            className="flex-1 bg-yellow-500 text-white px-2 py-1.5 rounded-md hover:bg-yellow-600 transition-colors"
                                                         >
                                                             Update
                                                         </button>
                                                         <button
                                                             onClick={() => handleDeleteMatch(match.id)}
-                                                            className="flex-1 bg-red-500 text-white px-1 py-1 rounded-sm hover:bg-red-600 transition-colors"
+                                                            className="flex-1 bg-red-500 text-white px-2 py-1.5 rounded-md hover:bg-red-600 transition-colors"
                                                         >
                                                             Delete
                                                         </button>
                                                     </div>
                                                 )}
                                             </div>
-                                            {/* End of Match Box */}
-
-                                            {/* Connecting Lines (simplified visual cues) */}
-                                            {/* Horizontal line extending from match to connect visually */}
-                                            {roundIndex < sortedRoundNames.length - 1 && (
-                                                <div className="absolute right-0 w-6 h-0.5 bg-gray-400 dark:bg-gray-500 top-1/2 transform translate-x-full -translate-y-1/2"></div>
-                                            )}
-                                            {/* Vertical line connecting pairs within a round (for R16, QF etc.) */}
-                                            {/* This requires careful positioning and is simplified here */}
-                                            {matchIndex % 2 === 0 && roundIndex < sortedRoundNames.length - 1 && groupedRounds[roundName][matchIndex + 1] && (
-                                                <div className="absolute bottom-[-22px] left-1/2 w-0.5 h-10 bg-gray-400 dark:bg-gray-500 transform -translate-x-1/2"></div>
-                                            )}
-                                            {/* Horizontal line from vertical connector to next match box */}
-                                            {matchIndex % 2 === 0 && roundIndex < sortedRoundNames.length - 1 && groupedRounds[roundName][matchIndex + 1] && (
-                                                <div className="absolute bottom-[-22px] left-1/2 w-8 h-0.5 bg-gray-400 dark:bg-gray-500 transform -translate-x-1/2 translate-x-[calc(50%+4px)]"></div>
-                                            )}
                                         </div>
                                     ))}
                                 </div>
@@ -779,3 +1026,5 @@ export default function KnockoutPage() {
         </div>
     );
 }
+
+export default KnockoutPage; // Ensure the main component is exported
