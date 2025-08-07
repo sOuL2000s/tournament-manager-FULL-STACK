@@ -6410,6 +6410,9 @@ export const getStrengthColor = (strength) => {
 
 --- END FILE: src\utils\passwordStrength.js ---
 
-------------------------------------------------------------------
+-------------------------------------------------------------------------------------------------
 
-Replace the tournament type multi phase tournament with the tournament type World Cup. And add another tournament type which is. UEFA Champions League. And under each. Tournament type. Implement their very own original tournament structure and. The complete process.
+tell me how to do the following here?
+
+the knockout bracket to look exactly like any professional tournament knockout bracket.
+after registering teams, i want them to show in the top scorers section where a new player is being added, for selecting his team.

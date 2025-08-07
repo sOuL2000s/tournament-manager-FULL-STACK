@@ -626,44 +626,37 @@ const KnockoutPage = () => { // Corrected syntax for component definition
         }
 
         const containerRect = svgContainerRef.current.getBoundingClientRect();
-        // Use container's position to make coordinates relative to the SVG.
-        // The SVG is positioned absolutely inside svgContainerRef, so its top-left is (0,0) within that container.
-        const offsetX = containerRect.left;
-        const offsetY = containerRect.top;
+        const offsetX = containerRect.left; // X-offset of the container
+        const offsetY = containerRect.top;  // Y-offset of the container
 
         const getMatchRect = (id) => {
             const el = matchRefs.current.get(id);
             if (el) {
                 const rect = el.getBoundingClientRect();
                 return {
-                    x: rect.left - offsetX,
-                    y: rect.top - offsetY,
+                    x: rect.left - offsetX, // Relative X to SVG container
+                    y: rect.top - offsetY,  // Relative Y to SVG container
                     width: rect.width,
                     height: rect.height,
-                    center_y: (rect.top - offsetY) + (rect.height / 2)
+                    center_y: (rect.top - offsetY) + (rect.height / 2) // Relative center Y
                 };
             }
             return null;
         };
 
-        // Constants for line drawing geometry
-        // These values are tuned for the visual appearance in your screenshot
         const horizontalSegment1 = 20; // Length of the first horizontal line segment from match box
-        // const horizontalSegment2 = 40; // Length of the horizontal line segment from vertical connector to next box (not directly used for fixed spacing in current drawing logic for next match)
 
         sortedRoundNames.forEach((roundName, roundIndex) => {
             const currentRoundMatches = groupedRounds[roundName];
-            
-            // Iterate over pairs of matches in the current round
+
             for (let i = 0; i < currentRoundMatches.length; i += 2) {
                 const match1 = currentRoundMatches[i];
-                const match2 = currentRoundMatches[i + 1]; // Can be undefined if odd number of matches
+                const match2 = currentRoundMatches[i + 1];
 
                 const rect1 = getMatchRect(match1.id);
                 const rect2 = match2 ? getMatchRect(match2.id) : null;
 
-                // Only draw if at least the first match box is available
-                if (!rect1) continue; 
+                if (!rect1) continue;
 
                 // Determine line color based on match status
                 const areBothMatchesCompleted = match1.status === 'completed' && (!match2 || match2.status === 'completed');
@@ -671,83 +664,61 @@ const KnockoutPage = () => { // Corrected syntax for component definition
                                         ? '#22C55E' // Green-500 for completed bracket part
                                         : (document.documentElement.classList.contains('dark') ? '#4B5563' : '#9CA3AF'); // Gray-600 dark / Gray-400 light
 
-                const startX = rect1.x + rect1.width; // Right edge of match1 (and match2 if it exists)
-                const midY1 = rect1.center_y;          // Center Y of match1
+                const startX = rect1.x + rect1.width; // Right edge of match box
+                const midY1 = rect1.center_y;
 
-                // X-coordinate where the vertical connector will be
-                // It's usually halfway between the end of current box and start of next box's column,
-                // but since the columns are dynamically positioned with flexbox, we can just use a fixed offset.
-                const x_vertical_junction = startX + horizontalSegment1; 
+                const x_vertical_junction = startX + horizontalSegment1; // X-coordinate for the vertical connector
 
-                if (rect2) { // Standard pair of matches (like A vs B, C vs D in your image)
-                    const midY2 = rect2.center_y;          // Center Y of match2
-
-                    const winnerLineY = (midY1 + midY2) / 2; // Center Y for the line representing the winner
+                if (rect2) { // Pair of matches
+                    const midY2 = rect2.center_y;
+                    const winnerLineY = (midY1 + midY2) / 2;
 
                     // Path 1: Horizontal line from match1 to vertical junction
-                    lines.push({ 
-                        d: `M ${startX} ${midY1} H ${x_vertical_junction}`, 
+                    lines.push({
+                        d: `M ${startX} ${midY1} H ${x_vertical_junction}`,
                         stroke: lineStrokeColor,
                     });
 
                     // Path 2: Horizontal line from match2 to vertical junction
-                    lines.push({ 
-                        d: `M ${startX} ${midY2} H ${x_vertical_junction}`, 
+                    lines.push({
+                        d: `M ${startX} ${midY2} H ${x_vertical_junction}`,
                         stroke: lineStrokeColor,
                     });
-                    
+
                     // Path 3: Vertical line connecting the two horizontal lines
-                    lines.push({ 
-                        d: `M ${x_vertical_junction} ${midY1} V ${midY2}`, 
+                    lines.push({
+                        d: `M ${x_vertical_junction} ${midY1} V ${midY2}`,
                         stroke: lineStrokeColor,
                     });
 
                     // Path 4: Line from the midpoint of the vertical connector, extending to the next round's match
-                    // Only draw this if it's not the final round
                     if (roundIndex < sortedRoundNames.length - 1) {
                         const nextRoundName = sortedRoundNames[roundIndex + 1];
                         const nextRoundMatches = groupedRounds[nextRoundName];
-                        const targetMatch = nextRoundMatches ? nextRoundMatches[Math.floor(i / 2)] : null; // The winner of this pair proceeds to this match
+                        const targetMatch = nextRoundMatches ? nextRoundMatches[Math.floor(i / 2)] : null;
 
                         if (targetMatch) {
                             const targetRect = getMatchRect(targetMatch.id);
                             if (targetRect) {
-                                const targetX = targetRect.x; // Left edge of the next match box
-                                lines.push({ 
-                                    d: `M ${x_vertical_junction} ${winnerLineY} H ${targetX}`, 
+                                const targetX = targetRect.x;
+                                lines.push({
+                                    d: `M ${x_vertical_junction} ${winnerLineY} H ${targetX}`,
                                     stroke: lineStrokeColor,
                                 });
                             }
-                        } else {
-                            // Fallback: if no target match (e.g., incomplete bracket or uneven matches), extend horizontally
-                            // This scenario might happen if the bracket generation is incomplete or irregular.
-                            lines.push({ 
-                                d: `M ${x_vertical_junction} ${winnerLineY} H ${x_vertical_junction + horizontalSegment1}`, // extend a bit more
-                                stroke: lineStrokeColor,
-                            });
                         }
                     } else { // This is the final round, extend winner line
-                        lines.push({ 
-                            d: `M ${x_vertical_junction} ${winnerLineY} H ${x_vertical_junction + horizontalSegment1}`, 
+                        lines.push({
+                            d: `M ${x_vertical_junction} ${winnerLineY} H ${x_vertical_junction + horizontalSegment1}`,
                             stroke: lineStrokeColor,
                         });
                     }
 
-                } else { // This case handles an unpaired match or the single final winner
-                    // If it's the very last match in the whole bracket (the winner of the final)
-                    if (roundIndex === sortedRoundNames.length - 1 && currentRoundMatches.length === 1) {
-                         lines.push({ 
-                            d: `M ${startX} ${midY1} H ${startX + horizontalSegment1}`, // Extend slightly to the right of the last box
-                            stroke: lineStrokeColor,
-                        });
-                    } else {
-                        // For any other unpaired match (shouldn't typically happen in a balanced bracket, but for robustness)
-                        // Or if a match is standalone but not the final winner (e.g., 3rd place playoff)
-                        lines.push({ 
-                            d: `M ${startX} ${midY1} H ${x_vertical_junction + horizontalSegment1}`, 
-                            stroke: lineStrokeColor,
-                        });
-                    }
+                } else { // Handle single match (e.g., last match/final)
+                    lines.push({
+                        d: `M ${startX} ${midY1} H ${startX + horizontalSegment1}`,
+                        stroke: lineStrokeColor,
+                    });
                 }
             }
         });
@@ -756,26 +727,24 @@ const KnockoutPage = () => { // Corrected syntax for component definition
 
     // Effect to redraw lines on data change, window resize, or component updates
     useEffect(() => {
-        // Debounce resize events for performance
         let resizeTimer;
         const handleResize = () => {
             clearTimeout(resizeTimer);
-            resizeTimer = setTimeout(drawBracketLines, 100); // 100ms debounce
+            resizeTimer = setTimeout(drawBracketLines, 100);
         };
-        
+
         window.addEventListener('resize', handleResize);
 
-        // Also run once on mount and when relevant data changes
-        // Use a small delay to ensure DOM elements (match boxes) have rendered and refs are populated
-        // This is crucial for getBoundingClientRect to be accurate.
-        const initialDrawTimer = setTimeout(drawBracketLines, 50); 
+        // Initial draw, with a slight delay to ensure all DOM elements are rendered
+        const initialDrawTimer = setTimeout(drawBracketLines, 50);
 
         return () => {
-            clearTimeout(resizeTimer); // Clear any pending debounced calls on unmount
-            clearTimeout(initialDrawTimer); // Clear initial draw timer too
+            clearTimeout(resizeTimer);
+            clearTimeout(initialDrawTimer);
             window.removeEventListener('resize', handleResize);
+            matchRefs.current.clear(); // Clear refs on unmount
         };
-    }, [matches, sortedRoundNames, groupedRounds, drawBracketLines]); // Depend on matches and memoized data for redraws
+    }, [matches, sortedRoundNames, groupedRounds, drawBracketLines]); // Re-run when matches or grouped data changes
 
 
     const commonNavLinks = (
@@ -927,14 +896,14 @@ const KnockoutPage = () => { // Corrected syntax for component definition
                         {/* SVG Overlay for drawing lines */}
                         <svg className="absolute inset-0 w-full h-full pointer-events-none z-0">
                             {svgLines.map((line, index) => (
-                                <path 
-                                    key={index} 
-                                    d={line.d} 
-                                    stroke={line.stroke} 
-                                    strokeWidth="2" 
-                                    fill="none" 
-                                    strokeLinejoin="round" 
-                                    strokeLinecap="round" 
+                                <path
+                                    key={index}
+                                    d={line.d}
+                                    stroke={line.stroke}
+                                    strokeWidth="2"
+                                    fill="none"
+                                    strokeLinejoin="round"
+                                    strokeLinecap="round"
                                 />
                             ))}
                         </svg>

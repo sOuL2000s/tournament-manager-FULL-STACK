@@ -1,3 +1,5 @@
+// --- START FILE: src\pages\PlayerPage.jsx ---
+
 import React, { useEffect, useState, useMemo, useCallback } from 'react';
 import { db } from '../firebase';
 import { collection, addDoc, onSnapshot, doc, deleteDoc, updateDoc, query, orderBy, getDoc, getDocs, writeBatch, where } from 'firebase/firestore';
@@ -51,9 +53,13 @@ export default function PlayerPage() {
   const [loadingTournamentData, setLoadingTournamentData] = useState(true);
   const [error, setError] = useState(null);
   const [players, setPlayers] = useState([]);
+  
   // matchStats is no longer needed as goals, assists, and MOTM are directly on player document
   // const [matchStats, setMatchStats] = useState([]);
-  const [teams, setTeams] = useState([]);
+
+  // THIS STATE WILL NOW BE POPULATED DIRECTLY FROM THE TEAMS COLLECTION
+  const [teams, setTeams] = useState([]); 
+  
   const [newPlayerName, setNewPlayerName] = useState('');
   const [newPlayerTeam, setNewPlayerTeam] = useState('');
   const [customNewTeamName, setCustomNewTeamName] = useState('');
@@ -99,6 +105,7 @@ export default function PlayerPage() {
     setModalConfirmAction(null);
   }, []);
 
+  // Effect to fetch tournament name and check permissions
   useEffect(() => {
     if (authLoading) {
       setLoadingTournamentData(true);
@@ -124,7 +131,7 @@ export default function PlayerPage() {
         const tournamentSnap = await getDoc(tournamentDocRef);
         if (tournamentSnap.exists()) {
           const data = tournamentSnap.data();
-          if (data.userId === user.uid) {
+          if (data.userId === user.uid) { // Ensure user is the owner
             setTournamentName(data.name);
           } else {
             setTournamentName('Access Denied');
@@ -146,11 +153,12 @@ export default function PlayerPage() {
     fetchTournamentName();
   }, [tournamentId, user, authLoading]);
 
+  // Effect to listen for real-time changes in Players and Teams
   useEffect(() => {
-    if (authLoading || !user || !tournamentId || error) return;
+    if (authLoading || !user || !tournamentId || error) return; // Wait until tournament data is loaded/checked
 
+    // 1. Listen for Players
     const playersCollectionRef = collection(db, `tournaments/${tournamentId}/players`);
-    // Listen for changes to players, including their 'goals', 'assists', and 'manOfTheMatchCount' fields
     const unsubscribePlayers = onSnapshot(playersCollectionRef, (snapshot) => {
       const fetchedPlayers = snapshot.docs.map(doc => ({
         id: doc.id,
@@ -161,28 +169,38 @@ export default function PlayerPage() {
         ...doc.data()
       }));
       setPlayers(fetchedPlayers);
-
-      const uniqueTeams = [...new Set(fetchedPlayers.map(player => player.team))].sort((a, b) => a.localeCompare(b));
-      setTeams(uniqueTeams);
-
-      if (showAddPlayerForm && newPlayerTeam === '' && uniqueTeams.length > 0) {
-        setNewPlayerTeam(uniqueTeams[0]);
-      } else if (showAddPlayerForm && newPlayerTeam === '' && uniqueTeams.length === 0) {
-        setNewPlayerTeam('_new_team_');
-      }
     }, (err) => {
       console.error('Error fetching real-time players:', err);
       setError('Failed to load players. Please try again.');
     });
 
-    // Removed fetchMatchStats as goals, assists, and manOfTheMatchCount are now directly on player document
-    // and updated via direct editing on this page. If fixture-derived stats are needed elsewhere,
-    // they should be fetched/calculated in a component that specifically deals with fixtures.
+    // 2. Listen for Teams (NEW ADDITION)
+    const teamsCollectionRef = collection(db, `tournaments/${tournamentId}/teams`);
+    const unsubscribeTeams = onSnapshot(query(teamsCollectionRef, orderBy('name', 'asc')), (snapshot) => {
+      // Map team documents to an array of just team names
+      const fetchedTeamNames = snapshot.docs.map(doc => doc.data().name);
+      setTeams(fetchedTeamNames); // Update the teams state with names from the 'teams' collection
+
+      // Adjust newPlayerTeam default selection only if the form is open and no team is selected
+      if (showAddPlayerForm && newPlayerTeam === '') {
+        if (fetchedTeamNames.length > 0) {
+          setNewPlayerTeam(fetchedTeamNames[0]); // Select the first team by default
+        } else {
+          setNewPlayerTeam('_new_team_'); // No existing teams, prompt to add a new one
+        }
+      }
+    }, (err) => {
+      console.error('Error fetching real-time teams for player addition:', err);
+      setError('Failed to load teams for player addition. Please try again.');
+    });
+
 
     return () => {
       unsubscribePlayers();
+      unsubscribeTeams(); // Cleanup the new teams listener
     };
   }, [tournamentId, user, authLoading, error, showAddPlayerForm, newPlayerTeam]); // Depend on showAddPlayerForm and newPlayerTeam to re-evaluate default team selection
+
 
   // Combine players with their total goals, assists, and man of the match counts
   const playersWithStats = useMemo(() => {
@@ -253,7 +271,11 @@ export default function PlayerPage() {
         return;
       }
       teamToAdd = customNewTeamName.trim();
+    } else if (newPlayerTeam === '') { // Catch case where nothing is selected but not new team
+        setAddPlayerError('Please select a team or add a new one.');
+        return;
     }
+
 
     try {
       // Check if a player with the same name and team already exists
@@ -277,7 +299,13 @@ export default function PlayerPage() {
       });
       setNewPlayerName('');
       setCustomNewTeamName('');
-      setNewPlayerTeam(teams.length > 0 ? teams[0] : '_new_team_');
+      // Reset newPlayerTeam only if it's not already pointing to a valid existing team
+      // The useEffect listener will handle setting a default if `newPlayerTeam` is empty.
+      if (teams.length > 0) {
+          setNewPlayerTeam(teams[0]);
+      } else {
+          setNewPlayerTeam('_new_team_');
+      }
       setShowAddPlayerForm(false); // Hide form after successful addition
     } catch (err) {
       console.error('Error adding player:', err);
@@ -415,14 +443,15 @@ export default function PlayerPage() {
                 className="w-full px-3 py-2 border rounded-md dark:bg-gray-700 dark:text-white focus:outline-none focus:ring-2 focus:ring-blue-500"
               />
 
+              {/* MODIFIED: This select now directly uses the 'teams' state from the teams collection */}
               <select
                 value={newPlayerTeam}
                 onChange={(e) => setNewPlayerTeam(e.target.value)}
                 className="w-full px-3 py-2 border rounded-md dark:bg-gray-700 dark:text-white focus:outline-none focus:ring-2 focus:ring-blue-500"
               >
                 <option value="">Select Team</option>
-                {teams.map((team, index) => (
-                  <option key={index} value={team}>{team}</option>
+                {teams.map((teamName, index) => ( // Loop directly over team names
+                  <option key={index} value={teamName}>{teamName}</option>
                 ))}
                 <option value="_new_team_">Add New Team</option>
               </select>
@@ -537,3 +566,5 @@ export default function PlayerPage() {
     </div>
   );
 }
+
+// --- END FILE: src\pages\PlayerPage.jsx ---
