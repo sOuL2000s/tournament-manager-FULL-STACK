@@ -6416,3 +6416,4 @@ tell me how to do the following here?
 
 the knockout bracket to look exactly like any professional tournament knockout bracket.
 after registering teams, i want them to show in the top scorers section where a new player is being added, for selecting his team.
+.
