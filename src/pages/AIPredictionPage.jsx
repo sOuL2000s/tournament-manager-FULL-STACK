@@ -82,7 +82,7 @@ export default function AIPredictionPage() {
       Consider general team strengths, current form (if known, otherwise assume average), and head-to-head records (if available, otherwise ignore).
       Provide a concise prediction.`;
 
-      const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-05-20:generateContent?key=${API_KEY}`, {
+      const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-09-2025:generateContent?key=${API_KEY}`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
